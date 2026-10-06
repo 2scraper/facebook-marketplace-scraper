@@ -27,9 +27,11 @@ distance + days all return listings; **a price sort together with
 `daysSinceListed` returned "No listings found" every time** (New York and
 London, both price sorts). The tool warns before running such a search.
 
-Seller: `marketplace_listing_seller` was `null` on 353 of 370 captured
-listings and named a person on 17; no row of any run above has a seller
-field.
+Seller: `marketplace_listing_seller` was `null` on 353 of 370 listings
+captured from this machine's (Kazakh) address and named a person on 17;
+on a New York search fetched through an EU residential proxy later the
+same day, every listing named its seller, embedded and paginated alike.
+No row of any run here has a seller field.
 
 Bugs found by these runs and fixed the same day:
 

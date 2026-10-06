@@ -14,7 +14,7 @@ Facebook's `robots.txt` disallows crawlers, and Meta's terms forbid automated co
 
 ## What to expect
 
-Every row comes from the data a Marketplace page embeds. Measured live on 2026-10-06 from an ordinary residential IP, with no key and no proxy: 5 searches in New York, London, Berlin, Los Angeles and Chicago — 100 listings in 25 seconds; 10 listings with their own pages in 102 seconds. Past the 24 a search page embeds, the tool follows the page's own pagination — 150 listings of one search in 35 seconds, about 600 per search from one address before Facebook's rate limit. Details in the [README](https://github.com/2scraper/facebook-marketplace-scraper#readme).
+Every row comes from the data a Marketplace page embeds and from its own pagination. Measured live on 2026-10-06: 150 listings of one Chicago search in 35 seconds; with no key and no proxy, 5 searches in New York, London, Berlin, Los Angeles and Chicago — the 24 each embeds — in 25 seconds; 10 listings with their own pages in 102 seconds. Past the 24 a search page embeds, the tool follows the page's own pagination — 150 listings of one search in 35 seconds, about 600 per search from one address before Facebook's rate limit. Details in the [README](https://github.com/2scraper/facebook-marketplace-scraper#readme).
 
 ## What you get
 
@@ -33,7 +33,7 @@ Every row comes from the data a Marketplace page embeds. Measured live on 2026-1
 | **Proxies — 2captcha.com/proxy** (2prx.com is the same product, different name) | Many searches from several addresses: residential exits in `.env` or `--proxy-file`, rotated per page with per-exit failure tracking |
 | **Scraper API — 2captcha.com** | No browser at all: `--scraper-api` fetches each page from 2Captcha's side, one HTTP call each |
 | **Scraping Browser API — 2captcha.com** | A remote browser session over CDP with its own proxy, fingerprint and captcha auto-solve bundled — `--cdp-endpoint` |
-| **Browser fingerprints — 2captcha Fingerprint API** | Pin a specific OS/browser/country fingerprint for a locally-launched browser |
+| **Browser fingerprints — 2captcha Fingerprint API** | Pick a Fingerprint API profile by OS and country for a locally-launched browser (applied as its user agent) |
 
 ## Who this is for
 

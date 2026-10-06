@@ -17,12 +17,14 @@ listing's description, condition, category, every photo and the currency
 code.
 
 - **No account, no cookies, no key.** It reads what Marketplace shows any
-  logged-out visitor: the listings a search page embeds.
-- **Measured live on 2026-10-06** from an ordinary residential IP with no
-  key and no proxy: 5 searches in New York, London, Berlin, Los Angeles
-  and Chicago — 100 listings in 25 seconds; and 10 listings with
-  `--details` in 102 seconds, every one with its description, condition,
-  photos and currency.
+  logged-out visitor: the listings a search page embeds, then the page's
+  own pagination for the rest.
+- **Measured live on 2026-10-06:** 150 listings of one Chicago search in
+  35 seconds, paginated past the first 24; 10 listings with `--details`
+  in 102 seconds, every one with its description, condition, photos and
+  currency; and, before pagination was added, 5 searches in New York,
+  London, Berlin, Los Angeles and Chicago — the 24 each embeds — in 25
+  seconds, with no key and no proxy.
 - **Nothing about sellers.** Sellers are private people; the tool never
   writes a seller field (see [Sellers](#sellers)).
 - **Honest results.** A blocked, empty or partial run says so in its exit
@@ -205,7 +207,10 @@ rather than read as data.
 
 From one residential IP on 2026-10-05 and 2026-10-06, more than 30
 search and listing pages read normally, 11 of them back to back at the
-default 2-second pace. We have not found where the limit is. If Facebook starts
+default 2-second pace; no page load was refused. The limit that WAS found
+is on pagination: about 25 next-page requests (~600 listings) per search
+from one address, then "Rate limit exceeded" (see
+[How a search is read](#how-a-search-is-read)). If Facebook starts
 refusing an address, the tool reports it as **blocked** (a login page,
 or a page that is not facebook.com's under 401/403/429), never as an
 empty search. Without a proxy pool it stops after 3 blocked answers in a
@@ -245,7 +250,7 @@ it never replaces your previous good file.
 | Exit | Meaning |
 |---|---|
 | `0` | complete |
-| `6` | partial: rows were written, but the run did not finish cleanly — `stop_reason` says why (`blocked`, `not_painted`, `failed_pages`, `rejected_rows`, `parse_error`, `remote_api_error`, `proxy_pool_exhausted`) |
+| `6` | partial: rows were written, but the run did not finish cleanly — `stop_reason` says why (`rate_limited`, `stalled`, `blocked`, `not_painted`, `failed_pages`, `rejected_rows`, `parse_error`, `remote_api_error`, `proxy_pool_exhausted`) |
 | `3` | blocked, no rows |
 | `4` | no rows: no listings for the search, or the listing is gone |
 | `5` | nothing could be read (fetch, parse or Scraper API failure); no rows |

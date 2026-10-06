@@ -82,7 +82,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         epilog="Credentials belong in .env / FACEBOOK_PROXY / TWOCAPTCHA_KEY — never on this command line.",
     )
     page_flow.add_marketplace_arguments(p)
-    p.add_argument("--max-results", type=_positive_int, default=100, help="Listings to write in total (a search gives at most 24); the rest is left out and the run marked capped")
+    p.add_argument("--max-results", type=_positive_int, default=100, help="Listings to write in total; past the 24 a search embeds the page's own pagination is followed (3s per 24). The rest is left out and the run marked capped")
     p.add_argument("--delay-between-pages", type=float, default=2.0)
     p.add_argument("--format", choices=["json", "csv"], default="json")
     p.add_argument("--out", default=None)
@@ -95,7 +95,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--twocaptcha-key", default=None)
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument("--solve-captcha", choices=["off", "when-blocked", "always"], default="when-blocked")
-    p.add_argument("--max-solves", type=int, default=8, help="Cap on PAID 2Captcha solves for the whole run (0 = never pay); recorded as solves_spent")
+    p.add_argument("--max-solves", type=int, default=8, help="Cap on paid 2Captcha solves for the whole run, recorded as solves_spent — kept for the local solver, which is disabled: nothing is solved or billed locally today (the Scraping Browser API auto-solves on its own)")
     p.add_argument("--min-score", type=float, default=0.3, help="Minimum acceptable reCAPTCHA v3 score (2Captcha's minScore task field)")
     p.add_argument("--fingerprint", action="store_true", help="Fetch and apply a 2Captcha Fingerprint API profile's user agent (ignored with --cdp-endpoint — see fingerprint_client.refuse_if_cdp)")
     p.add_argument("--fp-tags", default=None, help="Fingerprint API OS filter — one of Windows, Linux, Android (no browser names, no lists)")

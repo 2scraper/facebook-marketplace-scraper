@@ -8,6 +8,18 @@ that changes a default is called out at the top of its entry.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-06
+
+Text only — no change to what is read or written.
+
+### Fixed
+
+- `--max-solves` help: the local solver is disabled, so it caps nothing
+  today (the README already said so); the landing pages no longer promise
+  a browser-specific fingerprint (`--fp-tags` filters by OS only).
+- The exit-code table lists every `stop_reason` a partial run can carry.
+- --max-results help no longer says a search gives at most 24 (the tool paginates); README states the measured pagination limit instead of 'we have not found where the limit is'; the headline numbers say which were measured before pagination; TESTING and README tell the same story about sellers.
+
 ## [0.1.0] - 2026-10-06
 
 First release: Facebook Marketplace, read logged out. Run live on
