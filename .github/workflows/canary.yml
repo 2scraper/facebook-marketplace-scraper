@@ -1,0 +1,95 @@
+name: canary
+
+on:
+  schedule:
+    - cron: "41 6 * * *"   # once daily; avoid :00 so it doesn't pile up with everyone else's
+  workflow_dispatch: {}     # dispatch manually at least once before trusting the badge
+
+jobs:
+  # A real run: a keyword search (100 listings: the 24 embedded and the
+  # page's own pagination for the rest) and a second search with
+  # --details for 3 listings, through a residential proxy, with a local
+  # Playwright Chromium. A GitHub runner is a datacentre address, and how
+  # facebook.com answers one has not been measured; so without the
+  # FACEBOOK_PROXY secret this job SKIPS with a notice rather than risk
+  # going red every day for the address's sake.
+  #
+  # `vars.FACEBOOK_CANARY_LOCATION` / `vars.FACEBOOK_CANARY_QUERY` override
+  # the search (default nyc / bike). Blocked, empty, partial and
+  # remote-error outcomes are red.
+  canary:
+    runs-on: ubuntu-latest
+    env:
+      HAS_PROXY: ${{ secrets.FACEBOOK_PROXY != '' }}
+      CANARY_LOCATION: ${{ vars.FACEBOOK_CANARY_LOCATION || 'nyc' }}
+      CANARY_QUERY: ${{ vars.FACEBOOK_CANARY_QUERY || 'bike' }}
+      FACEBOOK_PROXY: ${{ secrets.FACEBOOK_PROXY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip — no FACEBOOK_PROXY secret configured
+        if: env.HAS_PROXY != 'true'
+        run: |
+          echo "::notice::Skipping: no FACEBOOK_PROXY secret. Set it (a residential \
+          http://login:password@host:port proxy) as a repo secret to turn the canary on. \
+          This is a SKIP, not a pass or a fail."
+
+      - uses: actions/setup-python@v5
+        if: env.HAS_PROXY == 'true'
+        with:
+          python-version: "3.12"
+      - name: Install Playwright and Chromium
+        if: env.HAS_PROXY == 'true'
+        run: |
+          pip install -r requirements-playwright.txt
+          playwright install --with-deps chromium
+
+      # The proxy reaches the scraper through the environment only, never
+      # argv (env_config.py reads FACEBOOK_PROXY).
+      - name: One search, and one with --details
+        if: env.HAS_PROXY == 'true'
+        run: |
+          set +e
+          python3 playwright_scraper.py --query "$CANARY_QUERY" --location "$CANARY_LOCATION" \
+            --format json --out canary.json --dump-html
+          echo "canary_exit=$?" >> "$GITHUB_ENV"
+          python3 playwright_scraper.py --query "$CANARY_QUERY" --location "$CANARY_LOCATION" \
+            --sort creation_time_descend --details --max-results 3 --format json --out canary_details.json
+          echo "canary_details_exit=$?" >> "$GITHUB_ENV"
+
+      - name: Require complete runs with full rows
+        if: env.HAS_PROXY == 'true'
+        run: |
+          python3 -c "
+          import json, os
+          for name, code in (('canary', os.environ['canary_exit']), ('canary_details', os.environ['canary_details_exit'])):
+              print(name, 'exit', code)
+              if int(code) != 0:
+                  raise SystemExit(f'{name} requires EXIT_OK=0, got {code}')
+              meta = json.load(open(name + '.json.meta.json'))
+              print(json.dumps(meta, indent=2))
+              assert meta['status'] == 'complete', meta
+          rows = json.load(open('canary.json'))
+          assert len(rows) == 100, len(rows)  # past the 24 embedded: pagination works
+          first = json.load(open('canary.json.meta.json'))
+          assert first['pages'][0]['pagination'] == 'limit' and first['pages'][0]['pagination_answers'] >= 3, first['pages']
+          for r in rows:
+              assert r['sku'] == 'facebook-listing-' + r['listing_id'] and r['listing_id'].isdigit(), r
+              assert r['title'] and r['price'] is not None and r['city'] and r['listed_at'] and r['image_url'], r
+              assert not any('seller' in k for k in r), r
+          details = json.load(open('canary_details.json'))
+          assert len(details) == 3, len(details)
+          for r in details:
+              assert r['price_source'] == 'item_page' and r['currency'] and r['condition'] is not None, r
+          print('canary: OK')
+          "
+
+      - name: Upload artifacts on every non-skipped run
+        if: always() && env.HAS_PROXY == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-${{ github.run_id }}
+          path: |
+            canary*.json
+            canary_debug_*.html
+          retention-days: 14
