@@ -8,12 +8,12 @@ read as delisted products, which is a false signal worse than no diff at
 all.
 
 A price difference that comes with a `price_source` difference is reported
-as `source_changed`, not `changed` — it says something about how much of
-each run's data got DOM-confirmed, not about the site. `--fail-on-change`
+as `source_changed`, not `changed` — it says where each run read the price
+(the search, or the listing's own page with --details), not about the site. `--fail-on-change`
 ignores `source_changed` rows for exactly that reason.
 
-Added after the 2026-09-30 audit, which diffed one SKU at 9.93 USD from a
-"dress" run against 19.93 EUR from a "jeans" run and got a price change:
+Added after a 2026-09-30 audit, which diffed one SKU from two different
+searches in two currencies and got a "price change":
 
 - Two runs must share their scope — the sidecar `url` (host, path and
   query: market, search term, category) and `sort`. Otherwise the diff is

@@ -2,14 +2,10 @@
 """output_writer.py — the row model, JSON/CSV writer, dedupe, exit codes,
 and run metadata. Carries (almost) no site knowledge: everything here is
 part of the family's shared output CONTRACT — diverging from it needs a
-written reason, not a per-site tweak. Ported near-verbatim from
-lidl-scraper's output_writer.py (CLAUDE.md §7: porting starts by copying
-the family-shared modules from the newest sibling and diffing what
-changed on purpose) — in turn ported from skyscanner-scraper's, in turn
-from stockx-scraper's original (commit 00b5570). The exit codes,
-STATUS_BY_EXIT map, and finish_run() outcome-precedence logic are
-IDENTICAL to every prior family member on purpose, including the fix
-from a 2026-09-15 audit that found `blocked`/`remote_api_error` were
+written reason, not a per-site tweak. The exit codes, STATUS_BY_EXIT
+map, and finish_run() outcome-precedence logic are shared with the other
+2scraper repos on purpose, including the fix from a 2026-09-15 audit
+that found `blocked`/`remote_api_error` were
 being silently ignored whenever products were present or --allow-empty
 was passed. Only the `Product` dataclass's site-specific tail (below the
 family-common fields) differs per repo.
@@ -262,9 +258,7 @@ def write_meta(
 # finish_run — the single place every engine calls to decide exit code,
 # whether to write output at all, and whether to write a sidecar. Keeping
 # this in one shared function is what stops the three engines' exit-code
-# mapping from drifting apart. Structurally identical to stockx-scraper's
-# post-audit-fix finish_run() (commit 00b5570) — see that file's comment
-# for the full incident writeup this precedence order fixes.
+# mapping from drifting apart.
 # --------------------------------------------------------------------------- #
 def finish_run(
     *,
@@ -306,7 +300,7 @@ def finish_run(
     # blocked partway through.
     #
     # Rows gathered by a run that did NOT finish cleanly are `partial` (6),
-    # with the cause in `stop_reason` (CLAUDE.md §25: exit 5 and exit 3
+    # with the cause in `stop_reason` (exit 5 and exit 3
     # promise no file; 6 means "some rows, incomplete"). Audit 2026-09-30:
     # this used to return 5 or 3 AND write the rows, so a consumer keyed on
     # the exit code threw away good data. `rejected_rows` counts records
@@ -324,7 +318,7 @@ def finish_run(
                        or ("failed_pages" if failed_pages and not blocked and not remote_api_error else status))
     elif remote_api_error or blocked or partial or rejected_rows:
         status, exit_code = "partial", EXIT_PARTIAL
-        # A throttle is not a block (CLAUDE.md §24): "blocked" sends the
+        # A throttle is not a block: "blocked" sends the
         # reader to buy a proxy, "rate_limited" to slow down.
         stop_reason = ("remote_api_error" if remote_api_error else "rate_limited" if rate_limited and blocked
                        else "blocked" if blocked else incomplete_reason or ("failed_pages" if partial else "rejected_rows"))

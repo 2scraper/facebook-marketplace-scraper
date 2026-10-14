@@ -120,7 +120,7 @@ async def _launch(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optio
     if cdp_endpoint:
         # pyppeteer's connect() has no timeout of its own and never resolves a
         # refused handshake; connect_with_retry bounds each try, retries a
-        # locked profile and names an expired one (CLAUDE.md §26).
+        # locked profile and names an expired one.
         return await scraper_api_client.connect_with_retry(
             lambda: pyppeteer_connect(browserWSEndpoint=cdp_endpoint, defaultViewport=None),
             redact=redact_credentials, log=log,
@@ -247,7 +247,7 @@ async def _open_page(browser, *, proxy: Optional[Proxy], user_agent: Optional[st
 
 GRAPHQL_PATH = lp.GRAPHQL_PATH
 DIALOG_CLOSE_SELECTOR = lp.DIALOG_CLOSE_SELECTOR
-# The same in-page POST as playwright_scraper's (kept identical, CLAUDE.md §4).
+# The same in-page POST as playwright_scraper's (kept identical).
 POST_FORM_JS = """async (data) => {
   const r = await fetch('/api/graphql/', {method: 'POST', credentials: 'include',
     headers: {'content-type': 'application/x-www-form-urlencoded'}, body: data});
@@ -364,7 +364,7 @@ def _quiet_target_closed(loop, context) -> None:
     if isinstance(exc, NetworkError) and any(m in str(exc) for m in _CLOSED_TARGET_NOISE):
         return
     # A refused CDP handshake leaves pyppeteer's own connect task failing
-    # after connect_with_retry moved on (CLAUDE.md §26): silence that shape.
+    # after connect_with_retry moved on: silence that shape.
     if exc is not None and type(exc).__name__ in ("InvalidStatusCode", "InvalidStatus", "InvalidHandshake", "AbortHandshake"):
         return
     loop.default_exception_handler(context)
@@ -444,7 +444,7 @@ def main() -> int:
     args = env_config.apply_env(args)
     try:
         # asyncio.run(), not get_event_loop(): the latter raises in any
-        # process that already ran and closed a loop (shein-scraper hit it).
+        # process that already ran and closed a loop (a sibling repo hit it).
         return asyncio.run(run(args))
     except KeyboardInterrupt:
         return EXIT_CRASH

@@ -4,7 +4,7 @@ playwright_scraper.py (same flags, same exit codes, same status semantics
 — see output_writer.finish_run). Selenium is not the primary engine
 (Playwright is); it exists for parity, not because it is preferred.
 
-Same hard engine limits as the rest of the family (see CLAUDE.md §6):
+Same hard engine limits as the rest of the family :
 
   - Selenium CANNOT use an AUTHENTICATED remote CDP endpoint. A
     `--cdp-endpoint` carrying credentials (the Scraping Browser API shape)
@@ -69,8 +69,7 @@ _CHROME_BINARY = os.environ.get("SELENIUM_CHROME_BIN") or os.environ.get("CHROME
 _CHROMEDRIVER_PATH = os.environ.get("SELENIUM_CHROMEDRIVER_PATH") or os.environ.get("CHROMEDRIVER_PATH")
 
 # Selenium Manager phones home to plausible.io with usage stats by default
-# (confirmed live on stockx-scraper/skyscanner-scraper/lidl-scraper) —
-# opted out the same way here, before this module's own SECURITY.md
+# (confirmed live on sibling repos) — opted out the same way here, before this module's own SECURITY.md
 # promise is tested.
 os.environ.setdefault("SE_AVOID_STATS", "true")
 

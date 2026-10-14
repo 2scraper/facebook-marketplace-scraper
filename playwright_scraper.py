@@ -2,8 +2,7 @@
 """playwright_scraper.py — Playwright engine for facebook-marketplace-scraper.
 Playwright is the primary engine (see selenium_scraper.py /
 puppeteer_scraper.py for parity copies — all three must agree on exit
-codes, run status and whether a run crashes or spends money — CLAUDE.md
-§4).
+codes, run status and whether a run crashes or spends money).
 
 **Input**: a search — `--query` (keywords) or `--category` (a category
 slug) in a `--location`, narrowed by `--min-price`, `--max-price`,
@@ -55,7 +54,7 @@ from scraper_api_client import TwoCaptchaClient
 
 ENGINE_NAME = "playwright"
 
-# --- the handful of engine constants that vary per site (CLAUDE.md §5) ---
+# --- the handful of engine constants that vary per site ---
 NAV_TIMEOUT_MS = 45_000
 # The shell arrives first and the results are streamed in after it;
 # page_flow polls for them (PAINT_WAIT_S). This pause only lets a
@@ -141,9 +140,8 @@ async def _new_context(
 ) -> BrowserContext:
     """Over --cdp-endpoint, reuse the profile's own default context: it
     holds the cookies that make the profile worth reusing — the same fix
-    shein-scraper needed live. A local browser gets a fresh isolated
-    context per URL, so no cookie from one exit is replayed from another
-    (CLAUDE.md §8)."""
+    a sibling repo needed live. A local browser gets a fresh isolated
+    context per URL, so no cookie from one exit is replayed from another."""
     if reuse_default and browser.contexts:
         return browser.contexts[0]
     kwargs = {"locale": "en-US", "viewport": dict(lp.VIEWPORT)}  # the size decides whether Marketplace paginates (listing_parser.VIEWPORT)
@@ -188,7 +186,7 @@ async def _maybe_solve_captcha(
 
 async def _connect_over_cdp(pw, cdp_endpoint: str):
     """Bounded, retried through a still-locked profile, and a 401 says the
-    endpoint expired (scraper_api_client.connect_with_retry, CLAUDE.md §26).
+    endpoint expired (scraper_api_client.connect_with_retry).
     Credentials never reach the message."""
     return await scraper_api_client.connect_with_retry(
         lambda: pw.chromium.connect_over_cdp(cdp_endpoint), redact=redact_credentials, log=log,

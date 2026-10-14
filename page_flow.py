@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """page_flow.py — what one Marketplace address MEANS, decided once for all
-engines (CLAUDE.md §1: three copies of this triage would drift, and the
+engines (three copies of this triage would drift, and the
 drift would be silent — one engine reporting exit 3 where its twin reports
 0 on the same page).
 
@@ -13,7 +13,7 @@ live on 2026-10-06 (see listing_parser.py):
   2. a Marketplace route with an empty feed → `empty`: a complete answer,
      zero rows, not a failure;
   3. a Marketplace route with no feed yet → `loading`: WAIT, bounded,
-     never retry (CLAUDE.md §18);
+     never retry;
   4. "This content isn't available right now" (`CometErrorRoute`) →
      `not_found` (a removed listing): listed, never retried, never a block;
   5. a login or checkpoint page → `blocked`;
@@ -87,7 +87,7 @@ class Outcome:
 
 
 # --------------------------------------------------------------------------- #
-# The engine boundary (CLAUDE.md §26)
+# The engine boundary
 # --------------------------------------------------------------------------- #
 class PageSession(_Protocol):
     async def goto(self, url: str) -> Optional[int]: ...  # HTTP status or None; raises on failure
@@ -112,7 +112,7 @@ class Engine(_Protocol):
 
 
 class SolveBudget:
-    """One cap on PAID captcha solves for the whole run (CLAUDE.md §23: a
+    """One cap on PAID captcha solves for the whole run (a
     per-page limit nothing sums is a bill). `limit=0` means never pay."""
 
     def __init__(self, limit: int):
@@ -291,7 +291,7 @@ async def fetch(engine: Engine, args, url: str, index: int, proxy_pool, *, kind:
                          "Re-run with --dump-html to inspect it.", url, status or "-", len(html or ""), lp.page_title(html))
         if proxy_pool is not None and proxy is not None:
             if outcome.blocked:
-                proxy_pool.report_failure(proxy, dead=True)  # a block is a property of the EXIT (CLAUDE.md §8)
+                proxy_pool.report_failure(proxy, dead=True)  # a block is a property of the EXIT
             else:
                 proxy_pool.report_success(proxy)
         if getattr(engine, "last_remote_error", False) and state not in ("content", "empty", "not_found"):
