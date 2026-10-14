@@ -260,11 +260,13 @@ it never replaces your previous good file.
 **CSV and safe writes.** In a CSV export, text that a spreadsheet would
 run as a formula (starting with `=`, `+`, `-` or `@`, or with a literal
 leading apostrophe) gets a leading `'`; the sidecar records this
-(`csv_text_encoding: apostrophe-v1`) and `diff_runs.py` restores the
-original text before comparing. JSON is unchanged. Every output file and
+(`csv_text_encoding: apostrophe-v1`, and `csv_cells_escaped`: how many
+formula-shaped cells were prefixed) and `diff_runs.py` restores the
+original text before comparing. JSON is unchanged, and `diff_runs.py`
+refuses to compare a JSON run with a CSV run. Every output file and
 sidecar is written to a temporary file first and swapped in only once
 complete, so a failed write never leaves a half-written file over the
-previous good one.
+previous good one; a file being replaced keeps its permissions.
 
 ## Monitoring changes
 

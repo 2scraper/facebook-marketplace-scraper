@@ -8,6 +8,42 @@ that changes a default is called out at the top of its entry.
 
 ## [Unreleased]
 
+> **Behaviour changes.** `puppeteer_scraper.py` and `selenium_scraper.py`
+> now refuse a negative `--retries`, `--retry-delay`,
+> `--delay-between-pages`, `--max-solves` or `--proxy-block-retries` with
+> exit 2, as `playwright_scraper.py` already did (a negative `--retries`
+> used to run no navigation at all and end exit 5). `FACEBOOK_URL` from the
+> environment or `.env` no longer overrides a typed `--urls-file` or blocks
+> a typed `--query`/`--category`. Replacing an existing output file keeps
+> that file's permissions instead of resetting them from the umask.
+
+### Fixed
+
+- `FACEBOOK_URL` is a default only: a typed `--query`, `--category` or
+  `--urls-file` wins over it, with a warning naming where it came from.
+  Only a typed `--url` conflicts with `--query`/`--category`.
+- The numeric flag validators are shared by all three engines.
+- An output or sidecar file that already exists keeps its mode when it is
+  replaced (0640 stays 0640); a new file still gets 0666 minus the umask.
+- A run whose every record was refused by the parser, with nothing else
+  wrong, reports `stop_reason: parse_error` (still exit 5) instead of
+  `remote_api_error`.
+- `diff_runs.py` refuses to compare a JSON run with a CSV run, where every
+  number read as changed.
+- The credential scan also reads ignored `.env.*` copies (`.env.bak`,
+  `.env.local`; never `.env` or `.env.example`) and fails if it scanned no
+  files at all.
+- The Scraping Browser 401 message no longer says endpoint credentials last
+  about a day; how long they live varies.
+- Comments and check labels describe this repo's own evidence and state
+  their rules directly instead of pointing at documents outside it.
+
+### Added
+
+- CSV sidecars record `csv_cells_escaped`: how many formula-shaped text
+  cells got the apostrophe prefix. Caller-supplied sidecar fields win over
+  it.
+
 ## [0.1.1] - 2026-10-06
 
 Text only — no change to what is read or written.

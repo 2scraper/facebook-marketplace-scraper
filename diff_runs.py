@@ -101,6 +101,14 @@ def diff(old_path: str, new_path: str, *, allow_different_scope: bool = False, f
     fields = list(MONITOR_FIELDS if fields is None else fields)
     if any(name not in MONITOR_FIELDS + EXTRA_FIELDS for name in fields):
         raise ValueError("Unsupported monitor field; choose from " + ", ".join(MONITOR_FIELDS + EXTRA_FIELDS))
+    old_suffix, new_suffix = Path(old_path).suffix.lower(), Path(new_path).suffix.lower()
+    if old_suffix != new_suffix:
+        # CSV carries every value as text and JSON carries numbers and
+        # booleans as such, so the same rows read as "changed" on every
+        # numeric column. Compare two runs written in the same format.
+        raise SystemExit(f"error: refusing to diff a {old_suffix or '(no extension)'} run against a "
+                         f"{new_suffix or '(no extension)'} run — every number would read as changed. "
+                         "Compare two runs written with the same --format.")
     old_meta, new_meta = _load_meta(old_path), _load_meta(new_path)
     for label, meta in (("old", old_meta), ("new", new_meta)):
         if meta.get("status") != "complete":

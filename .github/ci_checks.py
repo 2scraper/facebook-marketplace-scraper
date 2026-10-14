@@ -107,7 +107,16 @@ def repository_files() -> list[str]:
             for p in ROOT.rglob("*")
             if p.is_file()
         ]
-    return [p for p in paths if not _NOT_SOURCE_DIR.search(p) and not _in_virtualenv(p)]
+    # A renamed working copy (`.env.bak`, `.env.local`, `.env.save`) is
+    # IGNORED by `.env*`, so `--exclude-standard` above never lists it — yet
+    # `git add -f` stages it and a copy into another directory carries it
+    # along. Scan those copies too; `.env` itself is where a key belongs, and
+    # `.env.example` is the documented template.
+    paths = set(paths) | {
+        str(p.relative_to(ROOT)) for p in ROOT.rglob(".env.*")
+        if p.is_file() and p.name != ".env.example"
+    }
+    return sorted(p for p in paths if not _NOT_SOURCE_DIR.search(p) and not _in_virtualenv(p))
 
 
 def is_placeholder(user: str, password: str) -> bool:
@@ -169,6 +178,7 @@ def scan_text(relative: str, text: str) -> list[tuple[str, int, str]]:
 
 def scan() -> list[tuple[str, int, str]]:
     findings: list[tuple[str, int, str]] = []
+    scanned = 0
     for relative in repository_files():
         if relative in FIXTURE_ALLOWLIST:
             continue
@@ -176,7 +186,11 @@ def scan() -> list[tuple[str, int, str]]:
             text = (ROOT / relative).read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
+        scanned += 1
         findings.extend(scan_text(relative, text))
+    if scanned == 0:
+        # "Nothing found" and "nothing looked at" must never read the same.
+        findings.append(("(repository)", 0, "scanned_no_files"))
     return findings
 
 

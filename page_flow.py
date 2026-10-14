@@ -31,6 +31,7 @@ JavaScript crosses this boundary.
 """
 from __future__ import annotations
 
+import argparse as _argparse
 import logging as _logging
 from dataclasses import dataclass, field
 from pathlib import Path as _Path
@@ -133,9 +134,20 @@ def resolve_urls(args) -> tuple:
     """(addresses, skipped). `--query` / `--category` with `--location`
     build one search; `--url` wins over `--urls-file`, each a pasted
     Marketplace search, category or listing URL. Anything else is logged
-    and skipped, never fetched; duplicates are fetched once."""
+    and skipped, never fetched; duplicates are fetched once.
+
+    A URL that came from FACEBOOK_URL (environment or .env, recorded by
+    env_config as `_url_source`) is only a DEFAULT: input the caller typed
+    (`--query`, `--category`, `--urls-file`) wins over it, with a warning,
+    and never conflicts with it. Only a typed `--url` conflicts."""
+    typed_url = args.url
+    env_source = getattr(args, "_url_source", None)
+    if args.url and env_source and (getattr(args, "query", None) or getattr(args, "category", None)
+                                    or getattr(args, "urls_file", None)):
+        _log.warning("FACEBOOK_URL (from %s) ignored: the input typed on the command line wins over it.", env_source)
+        typed_url = None
     if getattr(args, "query", None) or getattr(args, "category", None):
-        if args.url or args.urls_file:
+        if typed_url or args.urls_file:
             raise ValueError("give --query/--category OR --url/--urls-file, not both: a pasted URL carries its own filters")
         if not getattr(args, "location", None):
             raise ValueError("--query/--category needs --location (a Marketplace location slug such as nyc, la, london)")
@@ -144,8 +156,8 @@ def resolve_urls(args) -> tuple:
                             days_since_listed=args.days_since_listed)
         _warn_known_empty(url)
         return [url], 0
-    if args.url:
-        candidates = [args.url]
+    if typed_url:
+        candidates = [typed_url]
     elif args.urls_file:
         try:
             lines = _Path(args.urls_file).read_text(encoding="utf-8").splitlines()
@@ -598,6 +610,32 @@ def validate_common(args, *, urls, skipped, print_err) -> Optional[int]:
     return None
 
 
+# --------------------------------------------------------------------------- #
+# Numeric flag validators — ONE set for every engine, so `--retries -1` (a
+# loop that would run zero times and never navigate) is a usage error on
+# every engine, not only on the one that happened to validate it.
+# --------------------------------------------------------------------------- #
+def positive_int(value: str) -> int:
+    ivalue = int(value)
+    if ivalue < 1:
+        raise _argparse.ArgumentTypeError(f"must be a positive integer (got {value!r})")
+    return ivalue
+
+
+def nonnegative_int(value: str) -> int:
+    ivalue = int(value)
+    if ivalue < 0:
+        raise _argparse.ArgumentTypeError(f"must be >= 0 (got {value!r})")
+    return ivalue
+
+
+def nonnegative_float(value: str) -> float:
+    fvalue = float(value)
+    if not fvalue >= 0:  # also refuses nan
+        raise _argparse.ArgumentTypeError(f"must be >= 0 (got {value!r})")
+    return fvalue
+
+
 def add_marketplace_arguments(p) -> None:
     """The input flags, identical on every engine."""
     p.add_argument("--query", default=None, help="Keyword search, as typed into Marketplace's search box (needs --location)")
@@ -608,5 +646,5 @@ def add_marketplace_arguments(p) -> None:
     p.add_argument("--sort", choices=lp.SORTS, default=None, help="The site's own sort order (default: best match)")
     p.add_argument("--days-since-listed", type=int, choices=lp.DAYS, default=None, help="Only listings from the last 1, 7 or 30 days")
     p.add_argument("--details", action="store_true", help="Also open each listing's own page: description, condition, category, photos, currency (one more page load per listing)")
-    p.add_argument("--url", default=None, help="One Marketplace search, category or listing URL, as copied from a browser (or set FACEBOOK_URL) — overrides --urls-file")
+    p.add_argument("--url", default=None, help="One Marketplace search, category or listing URL, as copied from a browser — overrides --urls-file. FACEBOOK_URL in the environment or .env is used only when no --query, --category or --urls-file is typed")
     p.add_argument("--urls-file", default=None, help="A file with one Marketplace search, category or listing URL per line (# comments allowed)")

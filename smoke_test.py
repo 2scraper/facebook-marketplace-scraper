@@ -1323,6 +1323,174 @@ def _():
     assert rc == output_writer.EXIT_REMOTE_API_ERROR and len(client.calls) == 2, (rc, len(client.calls))
 
 
+# --------------------------------------------------------------------------- #
+# Audit 2026-10-14
+# --------------------------------------------------------------------------- #
+@check("atomic writer: a file being REPLACED keeps its own mode (0640 stays 0640, 0664 stays 0664); a NEW file gets 0666 minus the umask, under umask 022, 002 and 077 — never a flat 0600/0644")
+def _():
+    import os as _os
+    import stat as _stat
+    old = _os.umask(0o022)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            for umask, expected in ((0o022, 0o644), (0o002, 0o664), (0o077, 0o600)):
+                _os.umask(umask)
+                target = Path(td) / f"new_{umask:o}.json"
+                output_writer.write_json([_mk_product("s1")], str(target))
+                got = _stat.S_IMODE(target.stat().st_mode)
+                assert got == expected, f"new file under umask {umask:o}: {got:o}, expected {expected:o}"
+            for umask in (0o022, 0o002, 0o077):
+                _os.umask(umask)
+                for existing in (0o640, 0o664):
+                    for fmt in ("json", "csv"):
+                        target = Path(td) / f"keep_{umask:o}_{existing:o}.{fmt}"
+                        target.write_text("old", encoding="utf-8")
+                        target.chmod(existing)
+                        output_writer.write_output([_mk_product("s1")], str(target), fmt)
+                        got = _stat.S_IMODE(target.stat().st_mode)
+                        assert got == existing, f"umask {umask:o}: existing {existing:o} became {got:o}"
+    finally:
+        _os.umask(old)
+
+
+@check("CSV formula guard: the sidecar records csv_cells_escaped (formula-shaped STRING cells only, never a number), merged UNDER the caller's own extra; JSON keeps the site's text and carries no such count")
+def _():
+    rows = [_mk_product("s1", -5.0, title='=HYPERLINK("x")', city="+cmd", state="-33.8"),
+            _mk_product("s2", 10.0, title="'quoted", city="@home")]
+    with tempfile.TemporaryDirectory() as td:
+        out = str(Path(td) / "o.csv")
+        rc = output_writer.finish_run(products=rows, out_path=out, fmt="csv", engine="t", url=_BIKE_URL,
+                                      pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                      remote_api_error=False, allow_empty=False, started_at=0.0)
+        meta = json.loads(Path(out + ".meta.json").read_text(encoding="utf-8"))
+        assert rc == 0 and meta["csv_cells_escaped"] == 4, meta.get("csv_cells_escaped")
+        assert meta["csv_text_encoding"] == "apostrophe-v1"
+        text = Path(out).read_text(encoding="utf-8")
+        assert "'=HYPERLINK" in text and ",-5.0," in text and "''quoted" in text, text
+        out2 = str(Path(td) / "c.csv")
+        output_writer.finish_run(products=rows, out_path=out2, fmt="csv", engine="t", url=_BIKE_URL,
+                                 pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                 remote_api_error=False, allow_empty=False, started_at=0.0,
+                                 extra_meta={"csv_cells_escaped": "caller"})
+        assert json.loads(Path(out2 + ".meta.json").read_text(encoding="utf-8"))["csv_cells_escaped"] == "caller"
+        out3 = str(Path(td) / "j.json")
+        output_writer.finish_run(products=rows, out_path=out3, fmt="json", engine="t", url=_BIKE_URL,
+                                 pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                 remote_api_error=False, allow_empty=False, started_at=0.0)
+        assert "csv_cells_escaped" not in json.loads(Path(out3 + ".meta.json").read_text(encoding="utf-8"))
+        assert json.loads(Path(out3).read_text(encoding="utf-8"))[0]["title"] == '=HYPERLINK("x")'
+
+
+@check("zero rows because the parser refused every record, nothing else wrong: exit 5 with stop_reason parse_error (our failure), not remote_api_error and not 4")
+def _():
+    with tempfile.TemporaryDirectory() as td:
+        out = str(Path(td) / "o.json")
+        rc = output_writer.finish_run(products=[], out_path=out, fmt="json", engine="t", url=_BIKE_URL,
+                                      pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                      remote_api_error=False, allow_empty=True, started_at=0.0, rejected_rows=3)
+        meta = json.loads(Path(out + ".meta.json").read_text(encoding="utf-8"))
+        assert rc == output_writer.EXIT_REMOTE_API_ERROR and meta["stop_reason"] == "parse_error", (rc, meta["stop_reason"])
+        rc = output_writer.finish_run(products=[], out_path=out, fmt="json", engine="t", url=_BIKE_URL,
+                                      pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                      remote_api_error=True, allow_empty=True, started_at=0.0, rejected_rows=3)
+        meta = json.loads(Path(out + ".meta.json").read_text(encoding="utf-8"))
+        assert rc == output_writer.EXIT_REMOTE_API_ERROR and meta["stop_reason"] == "remote_api_error", meta["stop_reason"]
+
+
+@check("every engine refuses a negative --retries (a loop that would run zero times and never navigate), --retry-delay, --delay-between-pages, --max-solves and --proxy-block-retries with an argparse error naming the flag; 0 retries stays legal (one attempt)")
+def _():
+    import contextlib
+    import io
+    for mod in _ENGINES:
+        assert mod.build_arg_parser().parse_args(["--retries", "0"]).retries == 0, mod.__name__
+        for flag, value in (("--retries", "-1"), ("--retry-delay", "-1"), ("--delay-between-pages", "-0.5"),
+                            ("--max-solves", "-1"), ("--proxy-block-retries", "-1"), ("--max-results", "0")):
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    mod.build_arg_parser().parse_args([flag, value])
+                raise AssertionError(f"{mod.__name__}: {flag} {value} was accepted")
+            except SystemExit as exc:
+                assert exc.code == 2, (mod.__name__, flag, exc.code)
+            assert f"error: argument {flag}" in err.getvalue(), (mod.__name__, flag, err.getvalue()[-200:])
+
+
+@check("FACEBOOK_URL from the environment or .env is only a default: a typed --query/--category builds its own search and a typed --urls-file is read (both with a warning), never refused or overridden; a TYPED --url with --query is still a usage error")
+def _():
+    import os as _os
+    saved = _os.environ.get("FACEBOOK_URL")
+    env_url = "https://www.facebook.com/marketplace/la/search/?query=env"
+    _os.environ["FACEBOOK_URL"] = env_url
+    try:
+        for mod in _ENGINES:
+            p = mod.build_arg_parser()
+            args = env_config.apply_env(p.parse_args(["--query", "bike", "--location", "nyc"]), dotenv_path="/nonexistent/.env")
+            assert args.url == env_url and mod._resolve_urls(args) == ([_BIKE_URL], 0), mod.__name__
+            f = _urls_file([_ITEM_URL])
+            args = env_config.apply_env(p.parse_args(["--urls-file", str(f)]), dotenv_path="/nonexistent/.env")
+            assert mod._resolve_urls(args) == ([_ITEM_URL], 0), (mod.__name__, mod._resolve_urls(args))
+            args = env_config.apply_env(p.parse_args([]), dotenv_path="/nonexistent/.env")
+            assert mod._resolve_urls(args) == ([env_url], 0), mod.__name__
+            args = env_config.apply_env(p.parse_args(["--query", "bike", "--location", "nyc", "--url", _BIKE_URL]),
+                                        dotenv_path="/nonexistent/.env")
+            try:
+                mod._resolve_urls(args)
+                raise AssertionError(f"{mod.__name__}: a typed --url with --query must be refused")
+            except ValueError:
+                pass
+    finally:
+        if saved is None:
+            _os.environ.pop("FACEBOOK_URL", None)
+        else:
+            _os.environ["FACEBOOK_URL"] = saved
+
+
+@check("diff_runs refuses a JSON run against a CSV run (every number would read as changed) and still diffs two CSV runs of the same rows as unchanged")
+def _():
+    rows = [_mk_product("s1", 9.5), _mk_product("s2", 0.0)]
+    with tempfile.TemporaryDirectory() as td:
+        outs = {}
+        for name, fmt in (("a.json", "json"), ("a.csv", "csv"), ("b.csv", "csv")):
+            out = str(Path(td) / name)
+            output_writer.finish_run(products=rows, out_path=out, fmt=fmt, engine="t", url=_BIKE_URL, pages_requested=1,
+                                     pages_completed=1, failed_pages=None, blocked=False, remote_api_error=False,
+                                     allow_empty=False, started_at=0.0)
+            outs[name] = out
+        try:
+            diff_runs.diff(outs["a.json"], outs["a.csv"])
+            raise AssertionError("a JSON run against a CSV run must be refused")
+        except SystemExit as exc:
+            assert "same --format" in str(exc), exc
+        r = diff_runs.diff(outs["a.csv"], outs["b.csv"])
+        assert not r["changed"] and not r["added"], r
+
+
+@check("the credential scan reads an IGNORED .env copy (.env.bak) that git ls-files never lists, leaves .env and .env.example alone, and reports a scan of zero files instead of passing it")
+def _():
+    import importlib.util
+    import shutil
+    import subprocess
+    if not (ROOT / ".github").is_dir():
+        return
+    spec = importlib.util.spec_from_file_location("ci_checks_envbak", ROOT / ".github" / "ci_checks.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    key = "TWOCAPTCHA_KEY=" + "0123456789abcdef" * 2
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        mod.ROOT = root
+        assert ("(repository)", 0, "scanned_no_files") in mod.scan(), "an empty scan must not pass"
+        (root / ".gitignore").write_text(".env*\n!.env.example\n", encoding="utf-8")
+        (root / "ok.py").write_text("x = 1\n", encoding="utf-8")
+        (root / ".env").write_text(key + "\n", encoding="utf-8")
+        (root / ".env.example").write_text("TWOCAPTCHA_KEY=\n", encoding="utf-8")
+        (root / ".env.bak").write_text(key + "\n", encoding="utf-8")
+        if shutil.which("git"):
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+        found = {path for path, _line, _rule in mod.scan()}
+        assert found == {".env.bak"}, found
+
+
 def run() -> int:
     """All @check-decorated functions above already ran at import time
     (that's the point — see the `check()` docstring) and self-registered
