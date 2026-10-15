@@ -8,6 +8,8 @@ that changes a default is called out at the top of its entry.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-15
+
 > **Behaviour changes.** `puppeteer_scraper.py` and `selenium_scraper.py`
 > now refuse a negative `--retries`, `--retry-delay`,
 > `--delay-between-pages`, `--max-solves` or `--proxy-block-retries` with
