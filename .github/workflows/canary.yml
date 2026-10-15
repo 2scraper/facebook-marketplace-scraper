@@ -9,14 +9,15 @@ jobs:
   # A real run: a keyword search (100 listings: the 24 embedded and the
   # page's own pagination for the rest) and a second search with
   # --details for 3 listings, through a residential proxy, with a local
-  # Playwright Chromium. A GitHub runner is a datacentre address, and how
-  # facebook.com answers one has not been measured; so without the
-  # FACEBOOK_PROXY secret this job SKIPS with a notice rather than risk
-  # going red every day for the address's sake.
+  # Playwright Chromium. Measured 2026-10-15 (run 38694372411, an Azure
+  # westus3 runner, no proxy): facebook.com sent BOTH searches to its login
+  # page (exit 3). So the live path needs the FACEBOOK_PROXY secret, and
+  # without it this job FAILS naming the secret: a skipped canary is not a
+  # tested site, and must never show green.
   #
   # `vars.FACEBOOK_CANARY_LOCATION` / `vars.FACEBOOK_CANARY_QUERY` override
   # the search (default nyc / bike). Blocked, empty, partial and
-  # remote-error outcomes are red.
+  # remote-error outcomes are red; so is a row count below the floor.
   canary:
     runs-on: ubuntu-latest
     env:
@@ -27,19 +28,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Skip — no FACEBOOK_PROXY secret configured
-        if: env.HAS_PROXY != 'true'
+      - name: Require the FACEBOOK_PROXY secret
         run: |
-          echo "::notice::Skipping: no FACEBOOK_PROXY secret. Set it (a residential \
-          http://login:password@host:port proxy) as a repo secret to turn the canary on. \
-          This is a SKIP, not a pass or a fail."
+          if [ "$HAS_PROXY" != "true" ]; then
+            echo "::error::The FACEBOOK_PROXY repo secret is not set. facebook.com sends a GitHub runner's datacentre address to its login page (measured 2026-10-15), so the canary cannot test the site without a residential http://login:password@host:port proxy. Add the secret; until then this canary is red on purpose."
+            exit 1
+          fi
 
       - uses: actions/setup-python@v5
-        if: env.HAS_PROXY == 'true'
         with:
           python-version: "3.12"
       - name: Install Playwright and Chromium
-        if: env.HAS_PROXY == 'true'
         run: |
           pip install -r requirements-playwright.txt
           playwright install --with-deps chromium
@@ -47,7 +46,6 @@ jobs:
       # The proxy reaches the scraper through the environment only, never
       # argv (env_config.py reads FACEBOOK_PROXY).
       - name: One search, and one with --details
-        if: env.HAS_PROXY == 'true'
         run: |
           set +e
           python3 playwright_scraper.py --query "$CANARY_QUERY" --location "$CANARY_LOCATION" \
@@ -58,7 +56,6 @@ jobs:
           echo "canary_details_exit=$?" >> "$GITHUB_ENV"
 
       - name: Require complete runs with full rows
-        if: env.HAS_PROXY == 'true'
         run: |
           python3 -c "
           import json, os
@@ -84,7 +81,7 @@ jobs:
           print('canary: OK')
           "
 
-      - name: Upload artifacts on every non-skipped run
+      - name: Upload artifacts on every run that reached the site
         if: always() && env.HAS_PROXY == 'true'
         uses: actions/upload-artifact@v4
         with:

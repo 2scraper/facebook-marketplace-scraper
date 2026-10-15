@@ -4,12 +4,11 @@
 Only paths and rule names are printed. A suspicious value is never echoed
 back into a CI log, because an exception/report is a credential leak too.
 
-Unlike tipranks-scraper (no credential model at all), this repo has a
-real one: a 2Captcha API key, proxy credentials, a Scraping Browser CDP
+This repo has a real credential model: a 2Captcha API key, proxy credentials, a Scraping Browser CDP
 endpoint, a Fingerprint API key. `env_config.py` is the only place any of
-these are read from (`.env`, never argv — CLAUDE.md Sec.3), and
+these are read from (`.env`, never argv), and
 `proxy_pool.redact_credentials` is the only place a credentialed URL gets
-logged or re-raised (CLAUDE.md Sec.8). This scanner is the third,
+logged or re-raised. This scanner is the third,
 independent check: it never trusts that either of those held everywhere
 they should have -- it just re-reads every committed/staged file and
 looks for the shapes a real credential takes, the same way a reviewer
@@ -26,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ALLOWLIST = {
     ".github/ci_checks.py",  # contains the detector patterns themselves
-    ".env.example",  # documents placeholder credentials verbatim, on purpose (CLAUDE.md Sec.17)
+    ".env.example",  # documents placeholder credentials verbatim, on purpose
     "smoke_test.py",  # deliberate credential-shaped masking/redaction test fixtures
 }
 
@@ -38,7 +37,7 @@ TOKEN_RULES = {
 }
 URL_CREDENTIALS = re.compile(r"\b(?:https?|wss?)://([^\s/@:]+):([^\s/@]+)@", re.I)
 # The name may itself be quoted, and JSON-escaped inside a string
-# (`"api_key": "…"`, `\"api_key\": \"…\"`) — CLAUDE.md §24: the old form
+# (`"api_key": "…"`, `\"api_key\": \"…\"`) — the old form
 # required `=`/`:` right after the bare name and missed both.
 SECRET_ASSIGNMENT = re.compile(
     r"\b(?:api[_-]?key|client[_-]?key|twocaptcha[_-]?key|TWOCAPTCHA_KEY|FACEBOOK_PROXY|"
@@ -81,7 +80,7 @@ _NOT_SOURCE_DIR = re.compile(r"(^|/)(\.venv[^/]*|venv|env|node_modules|build|dis
 def _in_virtualenv(relative: str) -> bool:
     """True when any parent directory holds a `pyvenv.cfg` — a virtualenv
     under ANY name (`myenv/`, `.venv-selenium/`), not just the names the
-    regex above knows (CLAUDE.md §23)."""
+    regex above knows."""
     parent = (ROOT / relative).parent
     while parent != ROOT and ROOT in parent.parents:
         if (parent / "pyvenv.cfg").exists():
@@ -108,7 +107,16 @@ def repository_files() -> list[str]:
             for p in ROOT.rglob("*")
             if p.is_file()
         ]
-    return [p for p in paths if not _NOT_SOURCE_DIR.search(p) and not _in_virtualenv(p)]
+    # A renamed working copy (`.env.bak`, `.env.local`, `.env.save`) is
+    # IGNORED by `.env*`, so `--exclude-standard` above never lists it — yet
+    # `git add -f` stages it and a copy into another directory carries it
+    # along. Scan those copies too; `.env` itself is where a key belongs, and
+    # `.env.example` is the documented template.
+    paths = set(paths) | {
+        str(p.relative_to(ROOT)) for p in ROOT.rglob(".env.*")
+        if p.is_file() and p.name != ".env.example"
+    }
+    return sorted(p for p in paths if not _NOT_SOURCE_DIR.search(p) and not _in_virtualenv(p))
 
 
 def is_placeholder(user: str, password: str) -> bool:
@@ -145,7 +153,7 @@ def _looks_like_type_hint(value: str) -> bool:
 def scan_text(relative: str, text: str) -> list[tuple[str, int, str]]:
     """The rules, on one file's text — separate so a check can PLANT a
     credential and require it to be found (a scanner that cannot fail is
-    not a scanner, CLAUDE.md §25)."""
+    not a scanner)."""
     findings: list[tuple[str, int, str]] = []
     for line_no, line in enumerate(text.splitlines(), 1):
         if True:
@@ -170,6 +178,7 @@ def scan_text(relative: str, text: str) -> list[tuple[str, int, str]]:
 
 def scan() -> list[tuple[str, int, str]]:
     findings: list[tuple[str, int, str]] = []
+    scanned = 0
     for relative in repository_files():
         if relative in FIXTURE_ALLOWLIST:
             continue
@@ -177,14 +186,18 @@ def scan() -> list[tuple[str, int, str]]:
             text = (ROOT / relative).read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
+        scanned += 1
         findings.extend(scan_text(relative, text))
+    if scanned == 0:
+        # "Nothing found" and "nothing looked at" must never read the same.
+        findings.append(("(repository)", 0, "scanned_no_files"))
     return findings
 
 
 def sample_check() -> int:
     """sample_output.{json,csv} carry exactly the Product columns. Lives
     here so tests.yml calls it instead of importing a local module inline
-    (CLAUDE.md §26)."""
+    (an inline heredoc import is red only on the first push)."""
     import csv
     import json
     sys.path.insert(0, str(ROOT))

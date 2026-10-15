@@ -2,8 +2,7 @@
 """playwright_scraper.py — Playwright engine for facebook-marketplace-scraper.
 Playwright is the primary engine (see selenium_scraper.py /
 puppeteer_scraper.py for parity copies — all three must agree on exit
-codes, run status and whether a run crashes or spends money — CLAUDE.md
-§4).
+codes, run status and whether a run crashes or spends money).
 
 **Input**: a search — `--query` (keywords) or `--category` (a category
 slug) in a `--location`, narrowed by `--min-price`, `--max-price`,
@@ -55,7 +54,7 @@ from scraper_api_client import TwoCaptchaClient
 
 ENGINE_NAME = "playwright"
 
-# --- the handful of engine constants that vary per site (CLAUDE.md §5) ---
+# --- the handful of engine constants that vary per site ---
 NAV_TIMEOUT_MS = 45_000
 # The shell arrives first and the results are streamed in after it;
 # page_flow polls for them (PAINT_WAIT_S). This pause only lets a
@@ -75,47 +74,26 @@ POST_FORM_JS = """async (data) => {
 log = logging.getLogger("playwright_scraper")
 
 
-def _positive_int(value: str) -> int:
-    ivalue = int(value)
-    if ivalue < 1:
-        raise argparse.ArgumentTypeError(f"must be a positive integer (got {value!r})")
-    return ivalue
-
-
-def _nonnegative_int(value: str) -> int:
-    ivalue = int(value)
-    if ivalue < 0:
-        raise argparse.ArgumentTypeError(f"must be >= 0 (got {value!r})")
-    return ivalue
-
-
-def _nonnegative_float(value: str) -> float:
-    fvalue = float(value)
-    if fvalue < 0:
-        raise argparse.ArgumentTypeError(f"must be >= 0 (got {value!r})")
-    return fvalue
-
-
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Facebook Marketplace scraper (listings, logged out) — Playwright engine",
         epilog="Credentials belong in .env / FACEBOOK_PROXY / TWOCAPTCHA_KEY — never on this command line.",
     )
     page_flow.add_marketplace_arguments(p)
-    p.add_argument("--max-results", type=_positive_int, default=100, help="Listings to write in total; past the 24 a search embeds the page's own pagination is followed (3s per 24). The rest is left out and the run marked capped")
-    p.add_argument("--delay-between-pages", type=_nonnegative_float, default=2.0, help="Politeness delay between page loads, seconds")
+    p.add_argument("--max-results", type=page_flow.positive_int, default=100, help="Listings to write in total; past the 24 a search embeds the page's own pagination is followed (3s per 24). The rest is left out and the run marked capped")
+    p.add_argument("--delay-between-pages", type=page_flow.nonnegative_float, default=2.0, help="Politeness delay between page loads, seconds")
     p.add_argument("--format", choices=["json", "csv"], default="json")
     p.add_argument("--out", default=None, help="Output path (default: facebook_marketplace.<format>)")
-    p.add_argument("--retries", type=_nonnegative_int, default=2, help="Retries on a single page's navigation failure")
-    p.add_argument("--retry-delay", type=_nonnegative_float, default=3.0)
+    p.add_argument("--retries", type=page_flow.nonnegative_int, default=2, help="Retries on a single page's navigation failure")
+    p.add_argument("--retry-delay", type=page_flow.nonnegative_float, default=3.0)
     p.add_argument("--proxy", default=None, help="A single proxy, e.g. http://login:pass@host:port (or set FACEBOOK_PROXY)")
     p.add_argument("--proxy-file", default=None, help="One proxy per line, same formats as --proxy")
     p.add_argument("--proxy-shuffle", action="store_true")
-    p.add_argument("--proxy-block-retries", type=int, default=3)
+    p.add_argument("--proxy-block-retries", type=page_flow.nonnegative_int, default=3)
     p.add_argument("--twocaptcha-key", default=None, help="(or set TWOCAPTCHA_KEY)")
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument("--solve-captcha", choices=["off", "when-blocked", "always"], default="when-blocked")
-    p.add_argument("--max-solves", type=_nonnegative_int, default=8, help="Cap on paid 2Captcha solves for the whole run, recorded as solves_spent — kept for the local solver, which is disabled: nothing is solved or billed locally today (the Scraping Browser API auto-solves on its own)")
+    p.add_argument("--max-solves", type=page_flow.nonnegative_int, default=8, help="Cap on paid 2Captcha solves for the whole run, recorded as solves_spent — kept for the local solver, which is disabled: nothing is solved or billed locally today (the Scraping Browser API auto-solves on its own)")
     p.add_argument("--min-score", type=float, default=0.3, help="Minimum acceptable reCAPTCHA v3 score (2Captcha's minScore task field)")
     p.add_argument("--cdp-endpoint", default=None, help="Connect to a remote CDP session (e.g. the 2Captcha Scraping Browser API) instead of launching locally (or set FACEBOOK_CDP_ENDPOINT)")
     p.add_argument("--scraper-api", action="store_true", help="Fetch through 2Captcha's Scraper API instead of driving this browser (needs TWOCAPTCHA_KEY; routed through FACEBOOK_CDP_ENDPOINT's Scraping Browser profile when one is set; the 24 listings a search embeds; with --details also each listing's own page)")
@@ -141,9 +119,8 @@ async def _new_context(
 ) -> BrowserContext:
     """Over --cdp-endpoint, reuse the profile's own default context: it
     holds the cookies that make the profile worth reusing — the same fix
-    shein-scraper needed live. A local browser gets a fresh isolated
-    context per URL, so no cookie from one exit is replayed from another
-    (CLAUDE.md §8)."""
+    a sibling repo needed live. A local browser gets a fresh isolated
+    context per URL, so no cookie from one exit is replayed from another."""
     if reuse_default and browser.contexts:
         return browser.contexts[0]
     kwargs = {"locale": "en-US", "viewport": dict(lp.VIEWPORT)}  # the size decides whether Marketplace paginates (listing_parser.VIEWPORT)
@@ -188,7 +165,7 @@ async def _maybe_solve_captcha(
 
 async def _connect_over_cdp(pw, cdp_endpoint: str):
     """Bounded, retried through a still-locked profile, and a 401 says the
-    endpoint expired (scraper_api_client.connect_with_retry, CLAUDE.md §26).
+    endpoint expired (scraper_api_client.connect_with_retry).
     Credentials never reach the message."""
     return await scraper_api_client.connect_with_retry(
         lambda: pw.chromium.connect_over_cdp(cdp_endpoint), redact=redact_credentials, log=log,

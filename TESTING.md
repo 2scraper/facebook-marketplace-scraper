@@ -150,8 +150,10 @@ Selenium refuses a credentialled endpoint up front (exit 2).
 
 `tests.yml` runs the offline suite on Python 3.9 and 3.12, builds the
 wheel and the Docker image, and runs one `engine-smoke` job per engine.
-`canary.yml` needs the `FACEBOOK_PROXY` repo secret; without it the job
-skips with a notice. Dispatch it once by hand and check both branches.
+`canary.yml` needs the `FACEBOOK_PROXY` repo secret: a GitHub runner's
+own address was sent to the login page on 2026-10-15 (run 38694372411).
+Without the secret the job FAILS with an error naming it; it never skips
+green. Dispatch it once by hand after setting the secret.
 
 ## 9. What "done" looks like
 

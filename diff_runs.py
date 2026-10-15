@@ -8,12 +8,12 @@ read as delisted products, which is a false signal worse than no diff at
 all.
 
 A price difference that comes with a `price_source` difference is reported
-as `source_changed`, not `changed` — it says something about how much of
-each run's data got DOM-confirmed, not about the site. `--fail-on-change`
+as `source_changed`, not `changed` — it says where each run read the price
+(the search, or the listing's own page with --details), not about the site. `--fail-on-change`
 ignores `source_changed` rows for exactly that reason.
 
-Added after the 2026-09-30 audit, which diffed one SKU at 9.93 USD from a
-"dress" run against 19.93 EUR from a "jeans" run and got a price change:
+Added after a 2026-09-30 audit, which diffed one SKU from two different
+searches in two currencies and got a "price change":
 
 - Two runs must share their scope — the sidecar `url` (host, path and
   query: market, search term, category) and `sort`. Otherwise the diff is
@@ -101,6 +101,14 @@ def diff(old_path: str, new_path: str, *, allow_different_scope: bool = False, f
     fields = list(MONITOR_FIELDS if fields is None else fields)
     if any(name not in MONITOR_FIELDS + EXTRA_FIELDS for name in fields):
         raise ValueError("Unsupported monitor field; choose from " + ", ".join(MONITOR_FIELDS + EXTRA_FIELDS))
+    old_suffix, new_suffix = Path(old_path).suffix.lower(), Path(new_path).suffix.lower()
+    if old_suffix != new_suffix:
+        # CSV carries every value as text and JSON carries numbers and
+        # booleans as such, so the same rows read as "changed" on every
+        # numeric column. Compare two runs written in the same format.
+        raise SystemExit(f"error: refusing to diff a {old_suffix or '(no extension)'} run against a "
+                         f"{new_suffix or '(no extension)'} run — every number would read as changed. "
+                         "Compare two runs written with the same --format.")
     old_meta, new_meta = _load_meta(old_path), _load_meta(new_path)
     for label, meta in (("old", old_meta), ("new", new_meta)):
         if meta.get("status") != "complete":

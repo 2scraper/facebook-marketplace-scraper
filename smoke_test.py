@@ -12,7 +12,7 @@ the answer for an address that is gone. They are NOT verbatim: each is
 rebuilt from the page's own JSON keeping only the paths listing_parser.py
 reads, with their real values, and dropping session tokens and every
 other field (see each file's header). Values are asserted against what
-those captures hold, not just that a column is populated (CLAUDE.md §10).
+those captures hold, not just that a column is populated.
 
 Run directly: `python3 smoke_test.py`
 """
@@ -94,7 +94,7 @@ _CHROMIUM_ERROR = ('<html><head><title>www.facebook.com</title></head><body><div
 
 
 # --------------------------------------------------------------------------- #
-# Engine import/CLI hygiene (CLAUDE.md §6)
+# Engine import/CLI hygiene
 # --------------------------------------------------------------------------- #
 @check("engines import cleanly regardless of installed drivers")
 def _():
@@ -103,7 +103,7 @@ def _():
         assert hasattr(mod, "run")
 
 
-@check("each engine imports its driver at MODULE level, guarded by try/except ImportError (an ast walk, not a substring: a driver imported inside a function makes the no-driver skip meaningless — CLAUDE.md §10)")
+@check("each engine imports its driver at MODULE level, guarded by try/except ImportError (an ast walk, not a substring: a driver imported inside a function makes the no-driver skip meaningless)")
 def _():
     import ast as _ast
     drivers = {"playwright_scraper": "playwright", "selenium_scraper": "selenium", "puppeteer_scraper": "pyppeteer"}
@@ -117,7 +117,7 @@ def _():
         assert guarded, f"{mod.__name__}: no module-level guarded import of {drivers[mod.__name__]}"
 
 
-@check("no module uses a name it never imports, defines or assigns (compileall proves a file PARSES, not that its names RESOLVE — CLAUDE.md §10)")
+@check("no module uses a name it never imports, defines or assigns (compileall proves a file PARSES, not that its names RESOLVE)")
 def _():
     import ast as _ast
     import builtins
@@ -147,14 +147,14 @@ def _():
 
 @check("no forbidden overclaiming wording in any shipped .py/.md/.yml file")
 def _():
-    # Built from pieces so this file can be scanned too (CLAUDE.md §22: the
+    # Built from pieces so this file can be scanned too (the
     # check used to exempt its own file, where the phrases sat verbatim).
     anti = "anti" + "detect"
     banned = (
         "cloud" + " browser", anti + " browser", "2scraper " + anti + " browser",
         "gate." + "2prx.com", "--" + anti, anti + "_local_api",
     )
-    exempt_names = {"CLAUDE.md"}
+    exempt_names = {"CLAUDE" + ".md"}  # a maintainer's local, untracked notes file
     venvs = {p.parent for p in ROOT.rglob("pyvenv.cfg")}
     for path in ROOT.rglob("*"):
         if not path.is_file():
@@ -168,6 +168,33 @@ def _():
         text = path.read_text(encoding="utf-8", errors="ignore").lower()
         for phrase in banned:
             assert phrase not in text, f"{path.relative_to(ROOT)}: contains banned phrase {phrase!r}"
+
+
+@check("no shipped file cites a private maintainer document or its numbered sections — the public cannot open it, so a rule is stated in this repo's own words")
+def _():
+    # Assembled from pieces so this check does not match its own source.
+    tokens = ("CLAUDE" + ".md", "claude_" + "2scraper", "2scraper_" + "repo_rules", "play" + "book", "\u00a7")
+    section_ref = re.compile(r"\bSec\.\s?\d")
+    exempt_names = {"CLAUDE" + ".md"}  # a maintainer's local, untracked notes file
+    venvs = {p.parent for p in ROOT.rglob("pyvenv.cfg")}
+    scanned = 0
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or path.name in exempt_names or path.name.startswith("2scraper"):
+            continue
+        if path.suffix not in (".py", ".md", ".html", ".toml", ".cfg", ".yml", ".yaml", ".txt", ".example") \
+                and path.name not in (".gitignore", ".dockerignore", "Dockerfile"):
+            continue
+        rel = path.relative_to(ROOT).parts
+        if ".git" in rel or "__pycache__" in rel or any(v in path.parents for v in venvs):
+            continue
+        if any(part.endswith(".egg-info") or part in ("build", "dist") for part in rel):
+            continue
+        scanned += 1
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for token in tokens:
+            assert token not in text, f"{path.relative_to(ROOT)}: cites a private document ({token!r})"
+        assert not section_ref.search(text), f"{path.relative_to(ROOT)}: cites a numbered section of a private document"
+    assert scanned >= 10, f"citation guard scanned only {scanned} files"
 
 
 @check("nothing shipped still names the repo this one was bootstrapped from (facebook-pages-scraper's module, flags, output names or site)")
@@ -188,7 +215,7 @@ def _():
             assert word not in text, f"{path.relative_to(ROOT)}: still says {word!r}"
 
 
-@check("all three engines expose the identical --flag set (CLAUDE.md §4)")
+@check("all three engines expose the identical --flag set")
 def _():
     def flag_set(mod):
         return {opt for a in mod.build_arg_parser()._actions for opt in a.option_strings if opt.startswith("--")}
@@ -208,10 +235,10 @@ def _():
         assert (a.max_solves, a.delay_between_pages, a.retries, a.max_results, a.details, a.sort) == (8, 2.0, 2, 100, False, None), mod.__name__
 
 
-@check("every top-level module is in the Dockerfile COPY and pyproject py-modules (a module left out breaks the image on every run — CLAUDE.md §16)")
+@check("every top-level module is in the Dockerfile COPY and pyproject py-modules (a module left out breaks the image on every run)")
 def _():
     if not (ROOT / "Dockerfile").exists() and not (ROOT / "pyproject.toml").exists():
-        return  # the Docker image's own copy of this suite ships neither (CLAUDE.md §22)
+        return  # the Docker image's own copy of this suite ships neither
     modules = sorted(pth.stem for pth in ROOT.glob("*.py"))
     docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -222,7 +249,7 @@ def _():
     assert listed <= set(modules), f"pyproject lists modules that do not exist: {sorted(listed - set(modules))}"
 
 
-@check("BOT_CHALLENGE_MARKERS is empty, and the generic markers match NONE of the real captures (CLAUDE.md §18: count a marker on a good page first)")
+@check("BOT_CHALLENGE_MARKERS is empty, and the generic markers match NONE of the real captures (count a marker on a good page first)")
 def _():
     assert lp.BOT_CHALLENGE_MARKERS == (), "no captcha vendor appeared on any Marketplace capture"
     for name in _PAGES:
@@ -232,7 +259,7 @@ def _():
 
 
 # --------------------------------------------------------------------------- #
-# output_writer — exit codes / precedence / dedupe (CLAUDE.md §9)
+# output_writer — exit codes / precedence / dedupe
 # --------------------------------------------------------------------------- #
 @check("exit codes and STATUS_BY_EXIT match the family contract exactly")
 def _():
@@ -252,7 +279,7 @@ def _mk_product(sku, price=None, **kw):
     return output_writer.Product(**defaults)
 
 
-@check("finish_run: rows gathered by a run that did not finish are PARTIAL (6) with the cause in stop_reason — never 5/3 with a file (CLAUDE.md §25; audit 2026-09-30 got exit 5 AND a written file). Rewrites the old pinned 'exit 5 with products' position deliberately.")
+@check("finish_run: rows gathered by a run that did not finish are PARTIAL (6) with the cause in stop_reason — never 5/3 with a file (audit 2026-09-30 got exit 5 AND a written file). Rewrites the old pinned 'exit 5 with products' position deliberately.")
 def _():
     cases = (
         (dict(blocked=True, remote_api_error=True), "remote_api_error"),
@@ -516,7 +543,7 @@ def _rows(name):
     return [lp.listing_row(n, search="s", position=i, scraped_at="x") for i, n in enumerate(lp.listings(lp.json_blocks(_fx(name))), 1)]
 
 
-@check("listing_row on the REAL New York search: values, not coverage (CLAUDE.md §10) — the site's order, price as a number, the displayed price kept, city/state, listed time in UTC, delivery types; currency left None for a bare '$' (the search does not say which dollar)")
+@check("listing_row on the REAL New York search: values, not coverage — the site's order, price as a number, the displayed price kept, city/state, listed time in UTC, delivery types; currency left None for a bare '$' (the search does not say which dollar)")
 def _():
     rows = _rows("search_bike_nyc")
     assert [r.listing_id for r in rows] == _BIKE_IDS and [r.position for r in rows] == list(range(1, 7))
@@ -613,7 +640,7 @@ def _():
         assert name in tail, f"{name} missing from Product's site-specific tail"
 
 
-@check("fixtures are scrubbed and stay scrubbed: no session token, no seller but the REDACTED placeholder, no link-shim signature — guarded by PATTERN (CLAUDE.md §10)")
+@check("fixtures are scrubbed and stay scrubbed: no session token, no seller but the REDACTED placeholder, no link-shim signature — guarded by PATTERN")
 def _():
     token = re.compile(r'["\']?(?:fb_dtsg|lsd|jazoest|__hsi|DTSGInitialData)["\']?\s*[:=]\s*["{]')
     seller = re.compile(r'"marketplace_listing_seller":\{(?!"__typename":"User","name":"REDACTED-not-verbatim")')
@@ -771,7 +798,8 @@ def _diff_run(td, name, rows, url, **kw):
 
 @check("diff_runs refuses different selections, never calls a currency switch a price change (even at the same number), reads a capped top-N's missing SKU as left_selection, and rejects a sidecar that does not describe its file (audit 2026-09-30)")
 def _():
-    dress, jeans = "https://us.shein.com/pdsearch/dress/", "https://us.shein.com/pdsearch/jeans/"
+    dress = "https://www.facebook.com/marketplace/nyc/bicycles/"
+    jeans = "https://www.facebook.com/marketplace/nyc/furniture/"
     with tempfile.TemporaryDirectory() as td:
         a = _diff_run(td, "a.json", [_mk_product("s1", 9.93, currency="USD")], dress)
         b = _diff_run(td, "b.json", [_mk_product("s1", 19.93, currency="EUR")], jeans)
@@ -805,7 +833,7 @@ def _():
         except SystemExit as exc:
             assert "output_sha256" in str(exc)
 
-@check("the credential scanner FINDS a planted key in every shape seen in the family (JSON-quoted, JSON-escaped, 32-hex next to a key word) and ignores placeholders, type hints and Python-name mappings — a scanner that cannot fail is not one (CLAUDE.md §24/§25)")
+@check("the credential scanner FINDS a planted key in every shape seen in the family (JSON-quoted, JSON-escaped, 32-hex next to a key word) and ignores placeholders, type hints and Python-name mappings — a scanner that cannot fail is not one")
 def _():
     import importlib.util
     scanner = ROOT / ".github" / "ci_checks.py"
@@ -821,11 +849,11 @@ def _():
     for harmless in ("api_key: Optional[str] = None", "TWOCAPTCHA_KEY=your-key-here", '"TWOCAPTCHA_KEY": "twocaptcha_key",'):
         assert not mod.scan_text("ok.txt", harmless), f"false positive: {harmless!r}"
 
-@check("no workflow imports a local module inline — tests.yml calls ci_checks.py instead (CLAUDE.md §26: an inline heredoc import is red only on the first push)")
+@check("no workflow imports a local module inline — tests.yml calls ci_checks.py instead (an inline heredoc import is red only on the first push)")
 def _():
     import re as _re
     if not (ROOT / ".github").is_dir():
-        return  # the Docker image ships no .github/ (CLAUDE.md §22)
+        return  # the Docker image ships no .github/
     local = {p.stem for p in ROOT.glob("*.py")}
     for wf in (ROOT / ".github" / "workflows").glob("*.yml"):
         text = wf.read_text(encoding="utf-8")
@@ -834,7 +862,7 @@ def _():
             assert name not in local, f"{wf.name}: imports local module {name!r} inline"
     assert "ci_checks.py --sample-check" in (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
 
-@check(".gitignore covers every artefact a run writes (CLAUDE.md §22/§26): .env copies, --dump-html challenge screenshots, *.pageN dumps, live/ — while sample outputs, fixtures and .env.example stay tracked")
+@check(".gitignore covers every artefact a run writes: .env copies, --dump-html challenge screenshots, *.pageN dumps, live/ — while sample outputs, fixtures and .env.example stay tracked")
 def _():
     import subprocess as _sp
     if not (ROOT / ".git").exists():
@@ -868,7 +896,7 @@ def _():
 
 
 # --------------------------------------------------------------------------- #
-# page_flow — the ONE fetch loop (CLAUDE.md §26), driven with a fake engine
+# page_flow — the ONE fetch loop, driven with a fake engine
 # --------------------------------------------------------------------------- #
 _SESSION = {"playwright_scraper": "_PlaywrightSession", "selenium_scraper": "_SeleniumSession", "puppeteer_scraper": "_PyppeteerSession"}
 _ENGINE = {"playwright_scraper": "_PlaywrightEngine", "selenium_scraper": "_SeleniumEngine", "puppeteer_scraper": "_PyppeteerEngine"}
@@ -890,7 +918,7 @@ def _():
     assert "_bounded(browser.disconnect()" in pup and "_release(remote_browser, remote=True)" in pup
 
 
-@check("§26 ops set, derived from page_flow's AST (every session.<op> / engine.<op> the loop uses): each engine's session and engine class provides all of them; the Scraper API engine provides all but the pagination ops, and says it cannot paginate")
+@check("engine ops set, derived from page_flow's AST (every session.<op> / engine.<op> the loop uses): each engine's session and engine class provides all of them; the Scraper API engine provides all but the pagination ops, and says it cannot paginate")
 def _():
     import ast as _ast
     import scraper_api_engine
@@ -1293,6 +1321,174 @@ def _():
 def _():
     rc, meta, rows, client, _ = _sapi([(None, "")], _SAPI_ARGV + ["--retries", "1"])
     assert rc == output_writer.EXIT_REMOTE_API_ERROR and len(client.calls) == 2, (rc, len(client.calls))
+
+
+# --------------------------------------------------------------------------- #
+# Audit 2026-10-14
+# --------------------------------------------------------------------------- #
+@check("atomic writer: a file being REPLACED keeps its own mode (0640 stays 0640, 0664 stays 0664); a NEW file gets 0666 minus the umask, under umask 022, 002 and 077 — never a flat 0600/0644")
+def _():
+    import os as _os
+    import stat as _stat
+    old = _os.umask(0o022)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            for umask, expected in ((0o022, 0o644), (0o002, 0o664), (0o077, 0o600)):
+                _os.umask(umask)
+                target = Path(td) / f"new_{umask:o}.json"
+                output_writer.write_json([_mk_product("s1")], str(target))
+                got = _stat.S_IMODE(target.stat().st_mode)
+                assert got == expected, f"new file under umask {umask:o}: {got:o}, expected {expected:o}"
+            for umask in (0o022, 0o002, 0o077):
+                _os.umask(umask)
+                for existing in (0o640, 0o664):
+                    for fmt in ("json", "csv"):
+                        target = Path(td) / f"keep_{umask:o}_{existing:o}.{fmt}"
+                        target.write_text("old", encoding="utf-8")
+                        target.chmod(existing)
+                        output_writer.write_output([_mk_product("s1")], str(target), fmt)
+                        got = _stat.S_IMODE(target.stat().st_mode)
+                        assert got == existing, f"umask {umask:o}: existing {existing:o} became {got:o}"
+    finally:
+        _os.umask(old)
+
+
+@check("CSV formula guard: the sidecar records csv_cells_escaped (formula-shaped STRING cells only, never a number), merged UNDER the caller's own extra; JSON keeps the site's text and carries no such count")
+def _():
+    rows = [_mk_product("s1", -5.0, title='=HYPERLINK("x")', city="+cmd", state="-33.8"),
+            _mk_product("s2", 10.0, title="'quoted", city="@home")]
+    with tempfile.TemporaryDirectory() as td:
+        out = str(Path(td) / "o.csv")
+        rc = output_writer.finish_run(products=rows, out_path=out, fmt="csv", engine="t", url=_BIKE_URL,
+                                      pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                      remote_api_error=False, allow_empty=False, started_at=0.0)
+        meta = json.loads(Path(out + ".meta.json").read_text(encoding="utf-8"))
+        assert rc == 0 and meta["csv_cells_escaped"] == 4, meta.get("csv_cells_escaped")
+        assert meta["csv_text_encoding"] == "apostrophe-v1"
+        text = Path(out).read_text(encoding="utf-8")
+        assert "'=HYPERLINK" in text and ",-5.0," in text and "''quoted" in text, text
+        out2 = str(Path(td) / "c.csv")
+        output_writer.finish_run(products=rows, out_path=out2, fmt="csv", engine="t", url=_BIKE_URL,
+                                 pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                 remote_api_error=False, allow_empty=False, started_at=0.0,
+                                 extra_meta={"csv_cells_escaped": "caller"})
+        assert json.loads(Path(out2 + ".meta.json").read_text(encoding="utf-8"))["csv_cells_escaped"] == "caller"
+        out3 = str(Path(td) / "j.json")
+        output_writer.finish_run(products=rows, out_path=out3, fmt="json", engine="t", url=_BIKE_URL,
+                                 pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                 remote_api_error=False, allow_empty=False, started_at=0.0)
+        assert "csv_cells_escaped" not in json.loads(Path(out3 + ".meta.json").read_text(encoding="utf-8"))
+        assert json.loads(Path(out3).read_text(encoding="utf-8"))[0]["title"] == '=HYPERLINK("x")'
+
+
+@check("zero rows because the parser refused every record, nothing else wrong: exit 5 with stop_reason parse_error (our failure), not remote_api_error and not 4")
+def _():
+    with tempfile.TemporaryDirectory() as td:
+        out = str(Path(td) / "o.json")
+        rc = output_writer.finish_run(products=[], out_path=out, fmt="json", engine="t", url=_BIKE_URL,
+                                      pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                      remote_api_error=False, allow_empty=True, started_at=0.0, rejected_rows=3)
+        meta = json.loads(Path(out + ".meta.json").read_text(encoding="utf-8"))
+        assert rc == output_writer.EXIT_REMOTE_API_ERROR and meta["stop_reason"] == "parse_error", (rc, meta["stop_reason"])
+        rc = output_writer.finish_run(products=[], out_path=out, fmt="json", engine="t", url=_BIKE_URL,
+                                      pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                      remote_api_error=True, allow_empty=True, started_at=0.0, rejected_rows=3)
+        meta = json.loads(Path(out + ".meta.json").read_text(encoding="utf-8"))
+        assert rc == output_writer.EXIT_REMOTE_API_ERROR and meta["stop_reason"] == "remote_api_error", meta["stop_reason"]
+
+
+@check("every engine refuses a negative --retries (a loop that would run zero times and never navigate), --retry-delay, --delay-between-pages, --max-solves and --proxy-block-retries with an argparse error naming the flag; 0 retries stays legal (one attempt)")
+def _():
+    import contextlib
+    import io
+    for mod in _ENGINES:
+        assert mod.build_arg_parser().parse_args(["--retries", "0"]).retries == 0, mod.__name__
+        for flag, value in (("--retries", "-1"), ("--retry-delay", "-1"), ("--delay-between-pages", "-0.5"),
+                            ("--max-solves", "-1"), ("--proxy-block-retries", "-1"), ("--max-results", "0")):
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    mod.build_arg_parser().parse_args([flag, value])
+                raise AssertionError(f"{mod.__name__}: {flag} {value} was accepted")
+            except SystemExit as exc:
+                assert exc.code == 2, (mod.__name__, flag, exc.code)
+            assert f"error: argument {flag}" in err.getvalue(), (mod.__name__, flag, err.getvalue()[-200:])
+
+
+@check("FACEBOOK_URL from the environment or .env is only a default: a typed --query/--category builds its own search and a typed --urls-file is read (both with a warning), never refused or overridden; a TYPED --url with --query is still a usage error")
+def _():
+    import os as _os
+    saved = _os.environ.get("FACEBOOK_URL")
+    env_url = "https://www.facebook.com/marketplace/la/search/?query=env"
+    _os.environ["FACEBOOK_URL"] = env_url
+    try:
+        for mod in _ENGINES:
+            p = mod.build_arg_parser()
+            args = env_config.apply_env(p.parse_args(["--query", "bike", "--location", "nyc"]), dotenv_path="/nonexistent/.env")
+            assert args.url == env_url and mod._resolve_urls(args) == ([_BIKE_URL], 0), mod.__name__
+            f = _urls_file([_ITEM_URL])
+            args = env_config.apply_env(p.parse_args(["--urls-file", str(f)]), dotenv_path="/nonexistent/.env")
+            assert mod._resolve_urls(args) == ([_ITEM_URL], 0), (mod.__name__, mod._resolve_urls(args))
+            args = env_config.apply_env(p.parse_args([]), dotenv_path="/nonexistent/.env")
+            assert mod._resolve_urls(args) == ([env_url], 0), mod.__name__
+            args = env_config.apply_env(p.parse_args(["--query", "bike", "--location", "nyc", "--url", _BIKE_URL]),
+                                        dotenv_path="/nonexistent/.env")
+            try:
+                mod._resolve_urls(args)
+                raise AssertionError(f"{mod.__name__}: a typed --url with --query must be refused")
+            except ValueError:
+                pass
+    finally:
+        if saved is None:
+            _os.environ.pop("FACEBOOK_URL", None)
+        else:
+            _os.environ["FACEBOOK_URL"] = saved
+
+
+@check("diff_runs refuses a JSON run against a CSV run (every number would read as changed) and still diffs two CSV runs of the same rows as unchanged")
+def _():
+    rows = [_mk_product("s1", 9.5), _mk_product("s2", 0.0)]
+    with tempfile.TemporaryDirectory() as td:
+        outs = {}
+        for name, fmt in (("a.json", "json"), ("a.csv", "csv"), ("b.csv", "csv")):
+            out = str(Path(td) / name)
+            output_writer.finish_run(products=rows, out_path=out, fmt=fmt, engine="t", url=_BIKE_URL, pages_requested=1,
+                                     pages_completed=1, failed_pages=None, blocked=False, remote_api_error=False,
+                                     allow_empty=False, started_at=0.0)
+            outs[name] = out
+        try:
+            diff_runs.diff(outs["a.json"], outs["a.csv"])
+            raise AssertionError("a JSON run against a CSV run must be refused")
+        except SystemExit as exc:
+            assert "same --format" in str(exc), exc
+        r = diff_runs.diff(outs["a.csv"], outs["b.csv"])
+        assert not r["changed"] and not r["added"], r
+
+
+@check("the credential scan reads an IGNORED .env copy (.env.bak) that git ls-files never lists, leaves .env and .env.example alone, and reports a scan of zero files instead of passing it")
+def _():
+    import importlib.util
+    import shutil
+    import subprocess
+    if not (ROOT / ".github").is_dir():
+        return
+    spec = importlib.util.spec_from_file_location("ci_checks_envbak", ROOT / ".github" / "ci_checks.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    key = "TWOCAPTCHA_KEY=" + "0123456789abcdef" * 2
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        mod.ROOT = root
+        assert ("(repository)", 0, "scanned_no_files") in mod.scan(), "an empty scan must not pass"
+        (root / ".gitignore").write_text(".env*\n!.env.example\n", encoding="utf-8")
+        (root / "ok.py").write_text("x = 1\n", encoding="utf-8")
+        (root / ".env").write_text(key + "\n", encoding="utf-8")
+        (root / ".env.example").write_text("TWOCAPTCHA_KEY=\n", encoding="utf-8")
+        (root / ".env.bak").write_text(key + "\n", encoding="utf-8")
+        if shutil.which("git"):
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+        found = {path for path, _line, _rule in mod.scan()}
+        assert found == {".env.bak"}, found
 
 
 def run() -> int:
