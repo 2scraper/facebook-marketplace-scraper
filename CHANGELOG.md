@@ -38,6 +38,11 @@ that changes a default is called out at the top of its entry.
 - Comments and check labels describe this repo's own evidence and state
   their rules directly instead of pointing at documents outside it.
 
+- The daily canary no longer skips green without a proxy. A GitHub runner
+  with no proxy was sent to the login page on 2026-10-15, so the canary
+  needs the `FACEBOOK_PROXY` secret and fails with an error naming it when
+  the secret is missing.
+
 ### Added
 
 - CSV sidecars record `csv_cells_escaped`: how many formula-shaped text

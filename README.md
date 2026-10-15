@@ -219,8 +219,10 @@ keeping every row already read. To read more: rotate residential exits
 with `--proxy-file`, and keep `--delay-between-pages` at 2 seconds or
 more.
 
-**A datacentre address has not been measured yet.** The daily canary
-runs from a GitHub runner only when a proxy secret is configured.
+**A datacentre address is refused.** Measured 2026-10-15 from a GitHub
+runner (Azure, westus3) with no proxy: both canary searches were sent to
+the login page (exit 3). The daily canary therefore needs the
+`FACEBOOK_PROXY` repo secret, and is red (not skipped) without it.
 
 ## Scraper API mode
 

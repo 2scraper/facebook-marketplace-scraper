@@ -8,11 +8,12 @@ on:
 jobs:
   # A real run: a keyword search (100 listings: the 24 embedded and the
   # page's own pagination for the rest) and a second search with
-  # --details for 3 listings, with a local Playwright Chromium. The README
-  # says a logged-out search needs no key and no proxy, so the job runs
-  # from the bare GitHub runner every day and must produce real rows: it is
-  # never skipped. When the FACEBOOK_PROXY secret is set, the scraper reads
-  # it from the environment and goes out through that exit instead.
+  # --details for 3 listings, through a residential proxy, with a local
+  # Playwright Chromium. Measured 2026-10-15 (run 38694372411, an Azure
+  # westus3 runner, no proxy): facebook.com sent BOTH searches to its login
+  # page (exit 3). So the live path needs the FACEBOOK_PROXY secret, and
+  # without it this job FAILS naming the secret: a skipped canary is not a
+  # tested site, and must never show green.
   #
   # `vars.FACEBOOK_CANARY_LOCATION` / `vars.FACEBOOK_CANARY_QUERY` override
   # the search (default nyc / bike). Blocked, empty, partial and
@@ -27,12 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Say which exit this run uses
+      - name: Require the FACEBOOK_PROXY secret
         run: |
-          if [ "$HAS_PROXY" = "true" ]; then
-            echo "::notice::FACEBOOK_PROXY is set: the scraper goes out through that proxy."
-          else
-            echo "::notice::No FACEBOOK_PROXY secret: the scraper runs from this GitHub runner's own (datacentre) address. A block here is RED, not a skip."
+          if [ "$HAS_PROXY" != "true" ]; then
+            echo "::error::The FACEBOOK_PROXY repo secret is not set. facebook.com sends a GitHub runner's datacentre address to its login page (measured 2026-10-15), so the canary cannot test the site without a residential http://login:password@host:port proxy. Add the secret; until then this canary is red on purpose."
+            exit 1
           fi
 
       - uses: actions/setup-python@v5
@@ -81,8 +81,8 @@ jobs:
           print('canary: OK')
           "
 
-      - name: Upload artifacts on every run
-        if: always()
+      - name: Upload artifacts on every run that reached the site
+        if: always() && env.HAS_PROXY == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: canary-${{ github.run_id }}
