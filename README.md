@@ -221,7 +221,7 @@ more.
 
 **A datacentre address is refused.** Measured 2026-10-15 from a GitHub
 runner (Azure, westus3) with no proxy: both canary searches were sent to
-the login page (exit 3). The daily canary therefore needs the
+the login page (exit 3). The weekly canary therefore needs the
 `FACEBOOK_PROXY` repo secret, and is red (not skipped) without it.
 
 ## Scraper API mode

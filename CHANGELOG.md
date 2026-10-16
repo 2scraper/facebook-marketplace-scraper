@@ -8,6 +8,11 @@ that changes a default is called out at the top of its entry.
 
 ## [Unreleased]
 
+### Changed
+
+- CI only: the canary bills the `FACEBOOK_PROXY` exit, so it now runs weekly
+  (Mondays 06:41 UTC) instead of daily; a manual dispatch still runs it.
+
 ## [0.2.0] - 2026-10-15
 
 > **Behaviour changes.** `puppeteer_scraper.py` and `selenium_scraper.py`
