@@ -1534,6 +1534,370 @@ def _():
                     assert "::error::" in proc.stdout, (has_proxy, code, proc.stdout[-300:], proc.stderr[-300:])
 
 
+# --------------------------------------------------------------------------- #
+# Proxy traffic savers: the pre-check and media blocking
+# --------------------------------------------------------------------------- #
+def _status_proxy(status):
+    """A local stand-in for a proxy gateway that answers every request,
+    CONNECT included, with `status`. Returns (server, hits)."""
+    import http.server
+    import socketserver
+    import threading
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _answer(self):
+            hits.append((self.command, self.path, self.headers.get("Proxy-Authorization") is not None))
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.send_header("Proxy-Authenticate", 'Basic realm="stub"')
+            self.end_headers()
+        do_CONNECT = do_GET = do_HEAD = _answer
+
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, hits
+
+
+class _NoBrowser:
+    """Stands in for every engine's browser entry point: the pre-check must
+    stop the run before any of them is reached."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, *a, **k):
+        self.calls += 1
+        raise AssertionError("a browser was started")
+
+    def __getattr__(self, name):  # selenium's `webdriver.Chrome`
+        return self
+
+
+class _SeleniumOptions:
+    """selenium's Options, for a venv without selenium."""
+
+    def __init__(self):
+        self.debugger_address = None
+
+    def add_argument(self, *a):
+        pass
+
+    def set_capability(self, *a):
+        pass
+
+    def add_experimental_option(self, *a):
+        pass
+
+
+def _engine_with_no_browser(mod):
+    import contextlib
+    from unittest import mock
+    fake = _NoBrowser()
+    attr = {"playwright_scraper": "async_playwright", "selenium_scraper": "webdriver",
+            "puppeteer_scraper": "pyppeteer_launch"}[mod.__name__]
+    patches = contextlib.ExitStack()
+    patches.enter_context(mock.patch.object(mod, attr, fake))
+    if mod is selenium_scraper:
+        patches.enter_context(mock.patch.object(mod, "Options", _SeleniumOptions))
+        patches.enter_context(mock.patch.object(mod, "Service", None))
+    return fake, patches
+
+
+def _run_through_stub_proxy(mod, status, argv=()):
+    import contextlib
+    import io
+    server, hits = _status_proxy(status)
+    port = server.server_address[1]
+    fake, patch = _engine_with_no_browser(mod)
+    err = io.StringIO()
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            out = str(Path(td) / "run.json")
+            Path(out).write_text("[]")  # a previous good run's data stays as it was
+            args = mod.build_arg_parser().parse_args(
+                ["--query", "bike", "--location", "nyc", "--out", out,
+                 "--proxy", f"http://user:S3cretPw@127.0.0.1:{port}", *argv])
+            with patch, contextlib.redirect_stderr(err):
+                code = asyncio_run_maybe(mod, args)
+            attempt_p = Path(out + output_writer.ATTEMPT_META_SUFFIX)
+            attempt = json.loads(attempt_p.read_text()) if attempt_p.exists() else {}
+            files = sorted(p.name for p in Path(td).iterdir())
+            data = Path(out).read_text()
+    finally:
+        server.shutdown()
+        server.server_close()
+    return code, fake.calls, hits, err.getvalue(), attempt, files, data
+
+
+@check("proxy pre-check: a gateway 407 or 402 ends EVERY browser engine at exit 5 before a browser starts — after ONE CONNECT for facebook.com/robots.txt; the message names FACEBOOK_PROXY and never the password; <out>.latest_attempt.meta.json says failed/proxy_auth_failed; the data is untouched and no <out>.meta.json is written")
+def _():
+    for mod in _ENGINES:
+        for status, words in ((407, "refused the credential"), (402, "balance exhausted")):
+            code, started, hits, text, attempt, files, data = _run_through_stub_proxy(mod, status)
+            where = (mod.__name__, status)
+            assert code == output_writer.EXIT_REMOTE_API_ERROR, (where, code, text[-300:])
+            assert started == 0, (where, "browser started")
+            assert [h[:2] for h in hits] == [("CONNECT", "www.facebook.com:443")], (where, hits)
+            assert words in text and "FACEBOOK_PROXY" in text and "No browser was started" in text, (where, text)
+            assert "S3cretPw" not in text and "S3cretPw" not in json.dumps(attempt), where
+            assert (attempt.get("status"), attempt.get("stop_reason"), attempt.get("data_updated")) == \
+                ("failed", "proxy_auth_failed", False), (where, attempt)
+            assert files == ["run.json", "run.json" + output_writer.ATTEMPT_META_SUFFIX] and data == "[]", (where, files)
+
+
+@check("proxy pre-check: Selenium checks the proxy the way Chrome will use it there — WITHOUT the password it cannot send — and a 407 then says to whitelist the IP; Playwright and pyppeteer send the credential")
+def _():
+    sent = {}
+    for mod in _ENGINES:
+        code, _started, hits, text, _a, _f, _d = _run_through_stub_proxy(mod, 407)
+        sent[mod.__name__] = hits[0][2]
+        if mod is selenium_scraper:
+            assert "IP whitelist" in text, text
+    assert sent == {"playwright_scraper": True, "selenium_scraper": False, "puppeteer_scraper": True}, sent
+
+
+@check("proxy pre-check: a 403 through the tunnel, an unreachable proxy or no proxy at all is not a verdict on the proxy — the run goes on to the browser exactly as before")
+def _():
+    for mod in _ENGINES:
+        code, started, hits, _t, attempt, _f, _d = _run_through_stub_proxy(mod, 403)
+        assert started == 1 and len(hits) == 1 and attempt == {}, (mod.__name__, started, hits, attempt)
+    assert proxy_pool.precheck_proxy("http://user:pass@127.0.0.1:1", "https://x.invalid/robots.txt", 3) is None
+    assert proxy_pool.precheck_proxy(None, "https://www.facebook.com/robots.txt") is None
+    assert proxy_pool.robots_url(_BIKE_URL) == "https://www.facebook.com/robots.txt"
+    pool = proxy_pool.ProxyPool([proxy_pool.parse_proxy_line("h:1:u:p"), proxy_pool.parse_proxy_line("g:2")])
+    assert pool.peek() is pool.next() and pool.peek().host == "g", "peek is the proxy the first search will use"
+    assert proxy_pool.parse_proxy_line("h:1:user:pass").url() == "http://user:pass@h:1"
+    assert proxy_pool.parse_proxy_line("h:1:user:pass").url(with_auth=False) == "http://h:1"
+
+
+def scraper_api_engine_mod():
+    import scraper_api_engine
+    return scraper_api_engine
+
+
+async def _zero():
+    return 0
+
+
+@check("proxy pre-check: never sent over --cdp-endpoint or --scraper-api (no local proxy there), with a --proxy given too")
+def _():
+    from unittest import mock
+    seen = []
+    with mock.patch.object(proxy_pool, "precheck_proxy", lambda *a, **k: seen.append(a)), \
+            mock.patch.object(page_flow, "run", side_effect=AssertionError("stop here")), \
+            mock.patch.object(scraper_api_engine_mod(), "run", lambda *a, **k: _zero()):
+        for mod in (playwright_scraper, puppeteer_scraper):
+            fake, patch = _engine_with_no_browser(mod)
+            with tempfile.TemporaryDirectory() as td, patch:
+                for extra in (["--cdp-endpoint", "ws://127.0.0.1:1"], ["--scraper-api"]):
+                    args = mod.build_arg_parser().parse_args(["--query", "bike", "--location", "nyc", "--out", str(Path(td) / "o.json"),
+                                                              "--proxy", "http://user:pass@127.0.0.1:9", *extra])
+                    asyncio_run_maybe(mod, args)
+        with tempfile.TemporaryDirectory() as td:
+            args = selenium_scraper.build_arg_parser().parse_args(["--query", "bike", "--location", "nyc", "--out", str(Path(td) / "o.json"),
+                                                                   "--proxy", "http://user:pass@127.0.0.1:9", "--scraper-api"])
+            selenium_scraper.run(args)
+    assert seen == [], seen
+
+
+@check("media: blocked only for a LOCAL browser behind a proxy; --load-media keeps it; never over CDP or with no proxy; the hidden --force-block-media turns it on for a free measurement")
+def _():
+    import argparse as _argparse
+    ns = _argparse.Namespace
+    sbm = proxy_pool.should_block_media
+    assert sbm(ns(load_media=False), proxy_in_use=True) is True
+    assert sbm(ns(load_media=True), proxy_in_use=True) is False
+    assert sbm(ns(load_media=False), proxy_in_use=False) is False
+    assert sbm(ns(load_media=False), proxy_in_use=True, over_cdp=True) is False
+    assert sbm(ns(load_media=False, force_block_media=True), proxy_in_use=False) is True
+    for mod in _ENGINES:
+        parser = mod.build_arg_parser()
+        assert parser.parse_args(["--query", "x"]).load_media is False
+        assert "--load-media" in parser.format_help() and "--force-block-media" not in parser.format_help(), mod.__name__
+
+
+class _Route:
+    def __init__(self, kind):
+        import argparse as _argparse
+        self.request = _argparse.Namespace(resource_type=kind)
+        self.done = None
+
+    async def abort(self, reason=None):
+        self.done = ("abort", reason)
+
+    async def continue_(self):
+        self.done = ("continue",)
+
+
+@check("media (Playwright): images, media and fonts are aborted, documents, scripts, XHR/fetch and stylesheets go on; the route is installed on a proxied local context only, and the run's sidecar records media_blocked")
+def _():
+    import argparse as _argparse
+    for kind, want in (("image", "abort"), ("media", "abort"), ("font", "abort"), ("document", "continue"),
+                       ("script", "continue"), ("xhr", "continue"), ("fetch", "continue"), ("stylesheet", "continue")):
+        route = _Route(kind)
+        asyncio.run(playwright_scraper._media_route(route))
+        assert route.done[0] == want, (kind, route.done)
+
+    class Page:
+        def on(self, *a):
+            pass
+
+    class Context:
+        def __init__(self):
+            self.routes = []
+
+        async def route(self, pattern, handler):
+            self.routes.append((pattern, handler))
+
+        async def new_page(self):
+            return Page()
+
+    class Browser:
+        def __init__(self):
+            self.contexts = [Context()]
+            self.made = []
+
+        async def new_context(self, **kw):
+            self.made.append(Context())
+            return self.made[-1]
+
+    proxy = proxy_pool.parse_proxy_line("h:1:u:p")
+    for argv, use_proxy, cdp, want in (([], True, False, True), (["--load-media"], True, False, False),
+                                       ([], False, False, False), ([], True, True, False),
+                                       (["--force-block-media"], False, False, True)):
+        args = playwright_scraper.build_arg_parser().parse_args(["--query", "x", *argv])
+        args.cdp_endpoint = "ws://h:1" if cdp else None
+        browser = Browser()
+        engine = playwright_scraper._PlaywrightEngine(browser, args, autosolve=False, user_agent=None, client=None)
+        session = asyncio.run(engine.open(proxy if use_proxy else None))
+        routes = session.context.routes
+        assert bool(routes) is want and engine.media_blocked is want, (argv, use_proxy, cdp, routes)
+        if want:
+            assert routes[0] == ("**/*", playwright_scraper._media_route)
+    args = playwright_scraper.build_arg_parser().parse_args(["--url", _BIKE_URL, "--max-results", "6"])
+    args._solve_budget = page_flow.SolveBudget(0)
+    engine = _FakeEngine({"*": {"html": _fx("search_bike_nyc")}}, None)
+    engine.can_paginate = False
+    engine.media_blocked = True
+    with tempfile.TemporaryDirectory() as td:
+        args.out = str(Path(td) / "o.json")
+        args.delay_between_pages = 0
+        asyncio.run(page_flow.run(engine, args, urls=[_BIKE_URL], proxy_pool=None, client=None, started_at=0.0))
+        assert json.loads(Path(args.out + ".meta.json").read_text())["media_blocked"] is True
+
+
+class _CDPClient:
+    def __init__(self):
+        self.sent, self.handlers = [], {}
+
+    def on(self, name, fn):
+        self.handlers[name] = fn
+
+    async def send(self, cmd, params=None):
+        self.sent.append((cmd, params))
+
+
+def _pyppeteer_page():
+    import argparse as _argparse
+    sessions = []
+
+    async def create():
+        sessions.append(_CDPClient())
+        return sessions[-1]
+    async def set_viewport(_size):
+        pass
+    page = _argparse.Namespace(_client=_CDPClient(), target=_argparse.Namespace(createCDPSession=create),
+                               setViewport=set_viewport)
+    return page, sessions
+
+
+@check("media (pyppeteer): an authenticated proxy's own Fetch interception also fails images/media/fonts (no second Fetch domain on the page); a proxy without a password gets proxy_pool.pyppeteer_block_media; nothing without blocking")
+def _():
+    async def paused(page, *events):
+        for event in events:
+            page._client.handlers["Fetch.requestPaused"](event)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    auth_proxy = proxy_pool.parse_proxy_line("h:1:u:p")
+    page, sessions = _pyppeteer_page()
+    took = asyncio.run(puppeteer_scraper._authenticate_if_needed(page, auth_proxy, block_media=True))
+    asyncio.run(paused(page, {"requestId": "i", "resourceType": "Image"}, {"requestId": "d", "resourceType": "Document"},
+                       {"requestId": "f", "resourceType": "Font"}))
+    sent = page._client.sent
+    assert took is True and sessions == []
+    assert [c for c, _ in sent].count("Fetch.enable") == 1
+    assert ("Fetch.failRequest", {"requestId": "i", "errorReason": "BlockedByClient"}) in sent
+    assert ("Fetch.failRequest", {"requestId": "f", "errorReason": "BlockedByClient"}) in sent
+    assert ("Fetch.continueRequest", {"requestId": "d"}) in sent
+
+    page, _ = _pyppeteer_page()
+    asyncio.run(puppeteer_scraper._authenticate_if_needed(page, auth_proxy, block_media=False))
+    asyncio.run(paused(page, {"requestId": "i", "resourceType": "Image"}))
+    assert ("Fetch.continueRequest", {"requestId": "i"}) in page._client.sent, "no blocking unless asked"
+
+    class Browser:
+        def __init__(self, page):
+            self.page = page
+
+        async def newPage(self):
+            return self.page
+    for proxy, block, want_session in ((proxy_pool.parse_proxy_line("h:1"), True, True),
+                                       (auth_proxy, True, False), (None, False, False)):
+        page, sessions = _pyppeteer_page()
+        asyncio.run(puppeteer_scraper._open_page(Browser(page), proxy=proxy, user_agent=None, autosolve=False,
+                                                 block_media=block))
+        assert bool(sessions) is want_session, (proxy, block, sessions)
+        if want_session:
+            patterns = dict(sessions[0].sent)["Fetch.enable"]["patterns"]
+            assert sorted(p["resourceType"] for p in patterns) == ["Font", "Image", "Media"]
+
+
+@check("media (Selenium): Network.setBlockedURLs by extension (images, video, fonts — never scripts or styles) right after a proxied local driver is created; none without a proxy, with --load-media or over --cdp-endpoint")
+def _():
+    from unittest import mock
+
+    class Driver:
+        def __init__(self, *a, **k):
+            self.sent = []
+
+        def execute_cdp_cmd(self, cmd, params):
+            self.sent.append((cmd, params))
+
+        def quit(self):
+            pass
+
+    Opts = _SeleniumOptions
+    fake_webdriver = type("W", (), {"Chrome": Driver})
+    with mock.patch.object(selenium_scraper, "webdriver", fake_webdriver), \
+            mock.patch.object(selenium_scraper, "Options", Opts), mock.patch.object(selenium_scraper, "Service", None):
+        for argv, use_proxy, cdp, want in (([], True, False, True), (["--load-media"], True, False, False),
+                                           ([], False, False, False), ([], True, True, False)):
+            args = selenium_scraper.build_arg_parser().parse_args(["--query", "x", *argv])
+            args.cdp_endpoint = "ws://127.0.0.1:9222" if cdp else None
+            engine = selenium_scraper._SeleniumEngine(args, user_agent=None, client=None)
+            session = asyncio.run(engine.open(proxy_pool.parse_proxy_line("h:1") if use_proxy else None))
+            blocked = dict(session.driver.sent).get("Network.setBlockedURLs", {}).get("urls", [])
+            assert bool(blocked) is want and engine.media_blocked is want, (argv, use_proxy, cdp, session.driver.sent)
+            if want:
+                assert all(p in blocked for p in ("*.jpg", "*.webp?*", "*.mp4", "*.woff2"))
+                assert not any(p.startswith(("*.js", "*.css")) for p in blocked)
+
+
+@check("media: every local-browser engine consults should_block_media and calls its own blocker (a source check: the suite runs without a browser binary)")
+def _():
+    for name, call in (("playwright_scraper", "_media_route"), ("selenium_scraper", "selenium_block_media"),
+                       ("puppeteer_scraper", "pyppeteer_block_media")):
+        source = (ROOT / f"{name}.py").read_text(encoding="utf-8")
+        assert "should_block_media(" in source and f"{call}" in source, name
+        assert "page_flow.precheck_proxy(" in source, name
+
+
 def run() -> int:
     """All @check-decorated functions above already ran at import time
     (that's the point — see the `check()` docstring) and self-registered

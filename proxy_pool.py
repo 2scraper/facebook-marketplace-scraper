@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
+from urllib.parse import quote, urlparse
 
 # Chromium reports a dead upstream proxy as one of these — NOT as a timeout.
 # A caller must retry a *timeout* at the same exit, and a *dead proxy* error
@@ -84,6 +85,14 @@ class Proxy:
         """pyppeteer/puppeteer: server goes on the launch args (no creds);
         call `page.authenticate({...})` separately for credentials."""
         return f"--proxy-server={self.server_only()}"
+
+    def url(self, with_auth: bool = True) -> str:
+        """The proxy as a URL for an HTTP client (the pre-check). Never log
+        it: with `with_auth` it carries the password."""
+        if with_auth and self.login:
+            auth = "%s:%s@" % (quote(self.login, safe=""), quote(self.password or "", safe=""))
+            return f"{self.scheme}://{auth}{self.host}:{self.port}"
+        return self.server_only()
 
     def pyppeteer_auth_dict(self) -> Optional[dict]:
         if not self.login:
@@ -166,6 +175,11 @@ class ProxyPool:
         self._cursor += 1
         return p
 
+    def peek(self) -> Optional[Proxy]:
+        """The proxy the next `.next()` returns, without advancing."""
+        live = self._live_proxies()
+        return live[self._cursor % len(live)] if live else None
+
     def report_failure(self, proxy: Proxy, dead: bool) -> None:
         """`dead=True` for a PROXY_DEAD_MARKERS error (kills the exit after
         `block_retries` in a row); `dead=False` (a timeout / non-proxy
@@ -217,3 +231,161 @@ def redact_credentials(text: str) -> str:
     text = _URL_CREDENTIAL_RE.sub(lambda m: f"{m.group('scheme')}***:***@", text)
     text = _KEY_PARAM_RE.sub(lambda m: f"{m.group(1)}=***", text)
     return text
+
+
+
+
+# ---------------------------------------------------------------------------
+# Traffic savers for runs through a paid proxy.
+#
+# 1. Pre-check. ONE small request (a HEAD for the target site's robots.txt)
+#    goes through the proxy BEFORE a browser is started. A gateway that
+#    answers 407 (credential refused, or the traffic balance is exhausted) or
+#    402 (traffic/balance exhausted) ends the run there, with exit 5, instead
+#    of launching a browser whose every request would be refused the same way.
+#    Any other outcome — a 200, a 403 from the site, a timeout, a DNS error —
+#    is not a verdict on the proxy and the run continues exactly as before.
+# 2. Media blocking. Images, video/audio and web fonts are aborted in the
+#    browser while its traffic goes through a LOCAL proxy (`--proxy` /
+#    `--proxy-file`): no parser here reads them, and they are most of a page's
+#    bytes. Not applied with `--cdp-endpoint` (the remote browser is billed
+#    and configured on its own side) or with no proxy (nothing is metered).
+#    `--load-media` keeps them.
+# ---------------------------------------------------------------------------
+
+PROXY_PRECHECK_STATUSES = {
+    407: "the gateway refused the credential (or the traffic balance is exhausted)",
+    402: "proxy traffic/balance exhausted",
+}
+PROXY_PRECHECK_STOP_REASON = "proxy_auth_failed"
+
+# Playwright `request.resource_type` values that are aborted.
+BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
+# The same three as CDP `Network.ResourceType` names (pyppeteer, via Fetch).
+BLOCKED_CDP_RESOURCE_TYPES = ("Image", "Media", "Font")
+# Selenium has no request events, only `Network.setBlockedURLs`, which
+# matches URLs, not resource types: an image served without an extension
+# still loads there.
+BLOCKED_URL_PATTERNS = tuple(
+    "*.%s%s" % (ext, tail)
+    for ext in ("jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "ico",
+                "mp4", "webm", "m4v", "mov", "mp3", "m4a", "ogg", "wav",
+                "woff", "woff2", "ttf", "otf", "eot")
+    for tail in ("", "?*"))
+
+
+class ProxyPrecheckError(RuntimeError):
+    """The proxy gateway itself refused the pre-check (407 or 402)."""
+
+    def __init__(self, status: int):
+        self.status = status
+        super().__init__("HTTP %d: %s" % (status, PROXY_PRECHECK_STATUSES[status]))
+
+
+_STATUS_IN_ERROR_RE = re.compile(r"Tunnel connection failed:\s*(40[27])\b")
+
+
+def robots_url(url: Optional[str]) -> Optional[str]:
+    """`scheme://host/robots.txt` for a page URL — the pre-check's target."""
+    try:
+        parts = urlparse(url or "")
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    return "%s://%s/robots.txt" % (parts.scheme, parts.netloc.rsplit("@", 1)[-1])
+
+
+def precheck_proxy(proxy_url: Optional[str], probe_url: Optional[str],
+                   timeout: float = 20.0) -> Optional[int]:
+    """One HEAD for `probe_url` through `proxy_url`.
+
+    Raises ProxyPrecheckError on a gateway 407/402. Returns the status the
+    probe got otherwise, or None when there was nothing to check (no proxy, a
+    non-HTTP proxy scheme, no probe URL) or the request failed in transport —
+    a transport failure keeps the run's existing behaviour. The proxy URL is
+    never printed or put in the exception.
+    """
+    if not proxy_url or not probe_url:
+        return None
+    try:
+        scheme = (urlparse(proxy_url).scheme or "http").lower()
+    except ValueError:
+        return None
+    if scheme not in ("http", "https"):
+        return None
+    try:
+        import requests
+    except ImportError:
+        return None
+    try:
+        response = requests.head(probe_url, proxies={"http": proxy_url, "https": proxy_url},
+                                 timeout=timeout, allow_redirects=False)
+    except requests.exceptions.ProxyError as exc:
+        # An https target: the gateway answers the CONNECT, and urllib3
+        # reports its status line as "Tunnel connection failed: 407 ...".
+        match = _STATUS_IN_ERROR_RE.search(str(exc))
+        if match:
+            raise ProxyPrecheckError(int(match.group(1))) from None
+        return None
+    except Exception:  # noqa: BLE001 - transport errors are not a verdict
+        return None
+    if response.status_code in PROXY_PRECHECK_STATUSES:
+        raise ProxyPrecheckError(response.status_code)
+    return response.status_code
+
+
+def precheck_message(exc: ProxyPrecheckError, env_var: str, site: str,
+                     browser: bool = True) -> str:
+    """What to print. Names the variable, never its value."""
+    return ("[!] proxy pre-check failed — %s.\n"
+            "    %s%s was never reached. Check %s (or the --proxy / --proxy-file "
+            "value)." % (exc, "No browser was started and " if browser else "",
+                         site, env_var))
+
+
+def should_block_media(args, proxy_in_use: bool, over_cdp: bool = False) -> bool:
+    """Abort images/media/fonts? Only for a LOCAL browser behind a proxy.
+
+    `--load-media` opts out. The hidden `--force-block-media` turns it on
+    without a proxy, so the effect on parsing can be measured for free.
+    """
+    if getattr(args, "force_block_media", False):
+        return True
+    if getattr(args, "load_media", False) or over_cdp:
+        return False
+    return bool(proxy_in_use)
+
+
+def playwright_media_route(route) -> None:
+    """`context.route("**/*", ...)` handler: abort the heavy resource types."""
+    if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+        route.abort("blockedbyclient")
+    else:
+        route.continue_()
+
+
+async def pyppeteer_block_media(page) -> None:
+    """Abort images/media/fonts in a pyppeteer page through the CDP Fetch domain.
+
+    `page.setRequestInterception` sends Network.setRequestInterception, which
+    current Chromium no longer implements; Fetch.enable with resource-type
+    patterns pauses only the requests to be aborted.
+    """
+    import asyncio
+    client = await page.target.createCDPSession()
+
+    def on_paused(event):
+        asyncio.ensure_future(client.send("Fetch.failRequest", {
+            "requestId": event["requestId"], "errorReason": "BlockedByClient"}))
+
+    client.on("Fetch.requestPaused", on_paused)
+    await client.send("Fetch.enable", {"patterns": [
+        {"resourceType": kind, "requestStage": "Request"}
+        for kind in BLOCKED_CDP_RESOURCE_TYPES]})
+
+
+def selenium_block_media(driver) -> None:
+    """Block media URLs in a Chrome WebDriver through `Network.setBlockedURLs`."""
+    driver.execute_cdp_cmd("Network.enable", {})
+    driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": list(BLOCKED_URL_PATTERNS)})
