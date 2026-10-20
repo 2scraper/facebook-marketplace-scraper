@@ -58,10 +58,15 @@ jobs:
       - name: Require complete runs with full rows
         run: |
           python3 -c "
-          import json, os
+          import json, os, sys, traceback
+          def annotate(kind, exc, tb):
+              traceback.print_exception(kind, exc, tb)
+              print('::error::canary row check failed: %s: %s' % (kind.__name__, str(exc)[:400].replace(chr(10), ' ')))
+          sys.excepthook = annotate
           for name, code in (('canary', os.environ['canary_exit']), ('canary_details', os.environ['canary_details_exit'])):
               print(name, 'exit', code)
               if int(code) != 0:
+                  print('::error::%s exit %s through the FACEBOOK_PROXY secret (1 crash, 3 blocked, 4 zero rows, 5 content never obtained, 6 partial). A proxy that rejects its credential (HTTP 407) reaches Chromium as a navigation timeout, so on exit 5 check the FACEBOOK_PROXY secret first.' % (name, code))
                   raise SystemExit(f'{name} requires EXIT_OK=0, got {code}')
               meta = json.load(open(name + '.json.meta.json'))
               print(json.dumps(meta, indent=2))
