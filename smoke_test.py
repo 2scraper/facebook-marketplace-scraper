@@ -1517,6 +1517,8 @@ def _canary_check_snippets():
 def _():
     import subprocess
     import sys
+    if not (ROOT / ".github").is_dir():
+        return  # the Docker image ships no workflows; the repository's own CI runs this check
     snippets = _canary_check_snippets()
     assert snippets, "no canary check step found in .github/workflows/canary.yml"
     with tempfile.TemporaryDirectory() as tmp:
