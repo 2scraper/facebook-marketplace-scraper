@@ -38,10 +38,15 @@ from pathlib import Path as _Path
 from typing import List, Optional
 from typing import Protocol as _Protocol
 
+import sys as _sys
+
 import listing_parser as lp
+import proxy_pool as _proxies
 from captcha_solver import detect_from_html
+from output_writer import EXIT_REMOTE_API_ERROR as _EXIT_REMOTE_API_ERROR
 from output_writer import Product
 from output_writer import finish_run as _finish_run
+from output_writer import write_failed_attempt as _write_failed_attempt
 from proxy_pool import is_proxy_dead_error as _is_proxy_dead_error, redact_credentials as _redact
 
 _log = _logging.getLogger("page_flow")
@@ -363,7 +368,8 @@ async def run(engine: Engine, args, *, urls: List[str], proxy_pool, client, star
             await engine.sleep(args.delay_between_pages)
     if args.details and not stopped:
         await _details(engine, args, state, proxy_pool, start_index=len(urls) + 1)
-    return finish_run(args, state, engine_name=engine.name, urls=urls, started_at=started_at)
+    return finish_run(args, state, engine_name=engine.name, urls=urls, started_at=started_at,
+                      media_blocked=bool(getattr(engine, "media_blocked", False)))
 
 
 def _collect(state: _Run, outcome: Outcome, url: str) -> None:  # the listings the page embeds
@@ -545,7 +551,8 @@ async def _details(engine, args, state: _Run, proxy_pool, *, start_index: int) -
 _INCOMPLETE_REASONS = ("rate_limited", "stalled", "not_painted", "parse_error", "proxy_pool_exhausted")
 
 
-def finish_run(args, state: _Run, *, engine_name: str, urls: List[str], started_at: float) -> int:
+def finish_run(args, state: _Run, *, engine_name: str, urls: List[str], started_at: float,
+               media_blocked: bool = False) -> int:
     failed, failures = [], []
     for index, o in enumerate(state.outcomes, 1):
         if o.failure or o.blocked:
@@ -565,18 +572,18 @@ def finish_run(args, state: _Run, *, engine_name: str, urls: List[str], started_
                   failed_pages=failed, failures=failures, capped=state.capped, pages=pages,
                   not_found=[o.url for o in state.outcomes if o.state == "not_found"],
                   details_read=sum(1 for o in details if o.state == "content" and not o.failure),
-                  rejected_rows=state.rejected)
+                  rejected_rows=state.rejected, media_blocked=media_blocked)
 
 
 def finish(args, *, products: List[Product], blocked: bool, remote_api_error: bool, engine_name: str,
            urls: List[str], started_at: float, pages_completed: int, failed_pages: List[int],
            pages_requested: Optional[int] = None, failures=None, capped: bool = False, pages=None,
-           not_found=None, details_read: int = 0, rejected_rows: int = 0) -> int:
+           not_found=None, details_read: int = 0, rejected_rows: int = 0, media_blocked: bool = False) -> int:
     budget = getattr(args, "_solve_budget", None)
     selection = {"mode": "marketplace", "urls": urls, "details": bool(args.details), "max_results": args.max_results}
     extra = {"solves_spent": budget.spent if budget is not None else 0, "selection": selection,
              "failed_urls": failures or [], "pages": pages or [], "not_found_urls": not_found or [],
-             "details_read": details_read}
+             "details_read": details_read, "media_blocked": media_blocked}
     return _finish_run(
         products=products, out_path=args.out, fmt=args.format, engine=engine_name, url=urls[0] if urls else "",
         pages_requested=len(urls) if pages_requested is None else pages_requested, pages_completed=pages_completed,
@@ -586,6 +593,52 @@ def finish(args, *, products: List[Product], blocked: bool, remote_api_error: bo
         incomplete_reason=next((f["reason"] for f in (failures or []) if f["reason"] in _INCOMPLETE_REASONS), None),
         capped=capped, extra_meta=extra,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Proxy traffic savers (see proxy_pool's block at the end of that file)
+# --------------------------------------------------------------------------- #
+PRECHECK_TIMEOUT_S = 20
+
+
+def precheck_proxy(args, proxy_pool, *, urls: List[str], engine_name: str, started_at: float,
+                   with_auth: bool = True) -> Optional[int]:
+    """ONE HEAD for facebook.com/robots.txt through the proxy the first
+    page will use, before any browser starts. A gateway 407/402 ends the
+    run: exit 5, `<out>.latest_attempt.meta.json` says failed /
+    proxy_auth_failed, the data and `<out>.meta.json` stay as they were. Any
+    other answer, or a transport error, returns None and the run goes on as
+    before. Never called over --cdp-endpoint or --scraper-api (no local
+    proxy there): the caller passes no pool. `with_auth=False` checks the
+    proxy the way an engine that cannot authenticate (Selenium) uses it."""
+    proxy = proxy_pool.peek() if proxy_pool is not None else None
+    if proxy is None or not urls:
+        return None
+    try:
+        _proxies.precheck_proxy(proxy.url(with_auth=with_auth), _proxies.robots_url(urls[0]),
+                                timeout=PRECHECK_TIMEOUT_S)
+    except _proxies.ProxyPrecheckError as exc:
+        message = _proxies.precheck_message(exc, "FACEBOOK_PROXY", "facebook.com")
+        if not with_auth and proxy.has_auth and exc.status == 407:
+            message += ("\n    Selenium cannot send a proxy password: allow this machine's IP in the proxy's "
+                        "settings (IP whitelist), or use playwright_scraper.py / puppeteer_scraper.py.")
+        print(message, file=_sys.stderr)
+        _write_failed_attempt(args.out, stop_reason=_proxies.PROXY_PRECHECK_STOP_REASON, engine=engine_name,
+                              url=urls[0], pages_requested=len(urls), started_at=started_at,
+                              transport_error="proxy pre-check: %s" % exc,
+                              extra={"selection": {"mode": "marketplace", "urls": urls,
+                                                   "details": bool(args.details), "max_results": args.max_results}})
+        return _EXIT_REMOTE_API_ERROR
+    return None
+
+
+def add_media_arguments(p) -> None:
+    """--load-media, and the hidden switch that measures blocking for free."""
+    p.add_argument("--load-media", action="store_true",
+                   help="Load images, video and web fonts. By default a local browser behind --proxy / --proxy-file "
+                        "aborts them (no field here is read from them, and the proxy bills per byte); nothing is "
+                        "blocked with --cdp-endpoint or with no proxy")
+    p.add_argument("--force-block-media", action="store_true", help=_argparse.SUPPRESS)
 
 
 def validate_common(args, *, urls, skipped, print_err) -> Optional[int]:

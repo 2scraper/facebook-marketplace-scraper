@@ -224,6 +224,50 @@ runner (Azure, westus3) with no proxy: both canary searches were sent to
 the login page (exit 3). The weekly canary therefore needs the
 `FACEBOOK_PROXY` repo secret, and is red (not skipped) without it.
 
+## Proxy traffic: pre-check and media
+
+Both apply only to a **local** browser going through `--proxy` /
+`--proxy-file` (or `FACEBOOK_PROXY`). Nothing changes with
+`--cdp-endpoint` (the Scraping Browser API brings its own exit and is
+configured on its own side), with `--scraper-api` (no local proxy), or
+with no proxy.
+
+**Pre-check.** Before a browser is started, each engine sends ONE
+`HEAD https://www.facebook.com/robots.txt` through the proxy the first
+page will use. If the proxy gateway answers `407` (credential refused,
+or the traffic balance is exhausted) or `402` (traffic/balance
+exhausted), the run stops there with exit 5. The message names
+`FACEBOOK_PROXY` and never prints its value. `<out>.latest_attempt.meta.json`
+records `status: failed`, `stop_reason: proxy_auth_failed`; the data file
+and `<out>.meta.json` are left exactly as they were. Any other answer (a
+200, a 403 from the site, a timeout, a DNS error) is not a verdict on the
+proxy, and the run goes on as before. Selenium checks the proxy the way
+Chrome uses it there, without the password (its `--proxy-server` cannot
+send one), so a proxy that needs its password stops at the pre-check with
+the advice to allow your IP in the proxy's settings.
+
+**Media.** Behind a local proxy, images, video/audio and web fonts are
+aborted: every field this tool writes, photo URLs included, comes from
+the page's embedded data and its GraphQL answers, never from the files
+themselves, and they are most of a page's bytes. `--load-media` keeps
+them. `<out>.meta.json` records `media_blocked`.
+
+| Engine | How |
+|---|---|
+| Playwright | `context.route` by resource type (`image`, `media`, `font`) |
+| Puppeteer | CDP `Fetch`, by resource type. With a proxy password, the same `Fetch` interception that answers the proxy's login also fails these requests |
+| Selenium | `Network.setBlockedURLs` by file extension (`.jpg`, `.png`, `.webp`, `.mp4`, `.woff2`, …): an image served without an extension still loads |
+
+While a route is installed, Playwright does not use its HTTP cache.
+
+**Not measured live.** On 2026-10-20, from a datacentre address with no
+proxy, the search was sent to the login page (exit 3) both with media
+and with blocking forced on, so the two could not be compared on real
+results. Pagination starts with a real mouse-wheel scroll of the page
+(see [How a search is read](#how-a-search-is-read)). If a search behind
+a proxy stops at its first 24 listings (`stalled`, pagination
+`no_request`), rerun it with `--load-media` and please report it.
+
 ## Scraper API mode
 
 With `--scraper-api` no browser is driven: each search, and each listing
@@ -247,7 +291,9 @@ per input address what happened and how many rows it gave, how many
 listing pages `--details` read, `not_found_urls`, failed addresses with
 reasons, whether `--max-results` capped the run, solves spent, and a
 hash of the output file. A run that collects nothing writes neither, so
-it never replaces your previous good file.
+it never replaces your previous good file. A run stopped by the proxy
+pre-check writes only `<out>.latest_attempt.meta.json` (see
+[Proxy traffic](#proxy-traffic-pre-check-and-media)).
 
 | Exit | Meaning |
 |---|---|
@@ -255,7 +301,7 @@ it never replaces your previous good file.
 | `6` | partial: rows were written, but the run did not finish cleanly — `stop_reason` says why (`rate_limited`, `stalled`, `blocked`, `not_painted`, `failed_pages`, `rejected_rows`, `parse_error`, `remote_api_error`, `proxy_pool_exhausted`) |
 | `3` | blocked, no rows |
 | `4` | no rows: no listings for the search, or the listing is gone |
-| `5` | nothing could be read (fetch, parse or Scraper API failure); no rows |
+| `5` | nothing could be read (the proxy refused the pre-check with 407/402, or a fetch, parse or Scraper API failure); no rows |
 | `2` | bad usage, including input where every line was skipped |
 | `1` | crash (a bug; please report it) |
 
@@ -310,6 +356,7 @@ the command line.
 | `--format` / `--out` | json / `facebook_marketplace.<format>` | output format and path |
 | `--proxy` / `--proxy-file` / `--proxy-shuffle` | `FACEBOOK_PROXY` | one proxy or a rotating pool, for a local browser |
 | `--proxy-block-retries` | 3 | blocked answers before that proxy is dropped from the pool |
+| `--load-media` | off | load images, video and fonts behind a local proxy (blocked by default there; see [Proxy traffic](#proxy-traffic-pre-check-and-media)) |
 | `--scraper-api` | off | no browser: fetch each page through 2Captcha's Scraper API (needs `TWOCAPTCHA_KEY`) |
 | `--cdp-endpoint` | `FACEBOOK_CDP_ENDPOINT` | connect to a Scraping Browser API profile instead of launching a browser |
 | `--solve-captcha` | when-blocked | `off` disables the Browser API's own captcha auto-solve; there is no local solver |

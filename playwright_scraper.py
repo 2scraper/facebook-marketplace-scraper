@@ -45,6 +45,7 @@ else:
 import env_config
 import listing_parser as lp
 import page_flow
+import proxy_pool as proxy_savers
 import scraper_api_engine
 import scraper_api_client
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
@@ -102,6 +103,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--fp-country", default=None, help="Fingerprint API filter, e.g. 'us'")
     p.add_argument("--allow-empty", action="store_true", help="Write output even if zero rows were found")
     p.add_argument("--dump-html", action="store_true", help="Save each page's HTML next to --out, on success too")
+    page_flow.add_media_arguments(p)
     p.add_argument("--headless", dest="headless", action="store_true", default=True)
     p.add_argument("--headful", dest="headless", action="store_false")
     return p
@@ -241,6 +243,14 @@ class _PlaywrightSession:
         await _close(self.page, self.context, reuse_default=self.reuse_default)
 
 
+async def _media_route(route) -> None:
+    """proxy_pool.playwright_media_route for the async API."""
+    if route.request.resource_type in proxy_savers.BLOCKED_RESOURCE_TYPES:
+        await route.abort("blockedbyclient")
+    else:
+        await route.continue_()
+
+
 class _PlaywrightEngine:
     """page_flow.Engine: a page per URL on the run's browser. Over
     --cdp-endpoint the profile's default context is reused (its cookies are
@@ -252,10 +262,16 @@ class _PlaywrightEngine:
 
     def __init__(self, browser: Browser, args: argparse.Namespace, *, autosolve: bool, user_agent: Optional[str], client):
         self.browser, self.args, self.autosolve, self.user_agent, self.client = browser, args, autosolve, user_agent, client
+        self.media_blocked = False
 
     async def open(self, proxy) -> _PlaywrightSession:
         reuse_default = bool(self.args.cdp_endpoint)
         context = await _new_context(self.browser, proxy, self.user_agent, reuse_default=reuse_default)
+        # Images, video and fonts are aborted behind a local proxy: every
+        # field is read from the page's embedded data, never from them.
+        if proxy_savers.should_block_media(self.args, proxy_in_use=proxy is not None, over_cdp=reuse_default):
+            await context.route("**/*", _media_route)
+            self.media_blocked = True
         page = await context.new_page()
         if self.autosolve:
             await _enable_scraping_browser_auto_solve(context, page)
@@ -309,6 +325,13 @@ async def run(args: argparse.Namespace) -> int:
                 user_agent = user_agent_from(profile)
                 if user_agent:
                     log.info("Fingerprint applied: user agent %s", user_agent)
+
+    if not args.cdp_endpoint:
+        # Before the browser: a gateway that refuses the credential (407) or
+        # has no balance left (402) would refuse every request it makes.
+        stop = page_flow.precheck_proxy(args, proxy_pool, urls=urls, engine_name=ENGINE_NAME, started_at=started_at)
+        if stop is not None:
+            return stop
 
     try:
         async with async_playwright() as pw:

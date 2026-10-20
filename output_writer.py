@@ -280,6 +280,40 @@ def write_meta(
         json.dump(meta, stream, ensure_ascii=False, indent=2)
 
 
+# A run that ended before it fetched anything (the proxy pre-check refused)
+# leaves the data and `<out>.meta.json` as they were — they still describe
+# the last good run — and records itself here instead.
+ATTEMPT_META_SUFFIX = ".latest_attempt.meta.json"
+
+
+def attempt_meta_path_for(out_path: str) -> str:
+    return f"{out_path}{ATTEMPT_META_SUFFIX}"
+
+
+def write_failed_attempt(out_path: str, *, stop_reason: str, engine: str, url: str, pages_requested: int,
+                         started_at: float, transport_error: str, extra: Optional[dict] = None) -> str:
+    """Write `<out>.latest_attempt.meta.json` for a run that stopped before
+    `finish_run` could decide anything. Never touches the data or `.meta.json`."""
+    meta = {
+        "status": "failed",
+        "stop_reason": stop_reason,
+        "engine": engine,
+        "url": url,
+        "pages_requested": pages_requested,
+        "pages_completed": 0,
+        "product_count": 0,
+        "data_updated": False,
+        "transport_error": transport_error,
+        "started_at": started_at,
+        "finished_at": time.time(),
+    }
+    meta.update(extra or {})
+    path = attempt_meta_path_for(out_path)
+    with _atomic_text(path) as stream:
+        json.dump(meta, stream, ensure_ascii=False, indent=2)
+    return path
+
+
 # --------------------------------------------------------------------------- #
 # finish_run — the single place every engine calls to decide exit code,
 # whether to write output at all, and whether to write a sidecar. Keeping

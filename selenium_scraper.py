@@ -55,6 +55,7 @@ else:
 import env_config
 import listing_parser as lp
 import page_flow
+import proxy_pool as proxy_savers
 import scraper_api_engine
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH
 from proxy_pool import Proxy, ProxyPool, ProxyParseError, load_proxies
@@ -106,6 +107,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--scraper-api", action="store_true", help="Fetch through 2Captcha's Scraper API instead of driving this browser (needs TWOCAPTCHA_KEY; routed through FACEBOOK_CDP_ENDPOINT's Scraping Browser profile when one is set; the 24 listings a search embeds; with --details also each listing's own page)")
     p.add_argument("--allow-empty", action="store_true")
     p.add_argument("--dump-html", action="store_true")
+    page_flow.add_media_arguments(p)
     p.add_argument("--headless", dest="headless", action="store_true", default=True)
     p.add_argument("--headful", dest="headless", action="store_false")
     return p
@@ -123,7 +125,8 @@ def _cdp_endpoint_has_credentials(cdp_endpoint: str) -> bool:
     return bool(parts.username or parts.password)
 
 
-def _build_driver(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optional[str], user_agent: Optional[str] = None):
+def _build_driver(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optional[str], user_agent: Optional[str] = None,
+                  block_media: bool = False):
     options = Options()
     if headless:
         options.add_argument("--headless=new")
@@ -163,7 +166,18 @@ def _build_driver(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optio
         service = Service()  # Selenium Manager: resolves/downloads over the network
     else:
         service = None
-    return webdriver.Chrome(service=service, options=options) if service else webdriver.Chrome(options=options)
+    driver = webdriver.Chrome(service=service, options=options) if service else webdriver.Chrome(options=options)
+    driver.media_blocked = False
+    if block_media:
+        # By URL pattern (Selenium has no request events): an image served
+        # without a file extension still loads.
+        try:
+            proxy_savers.selenium_block_media(driver)
+            driver.media_blocked = True
+        except Exception:
+            _quit(driver)
+            raise
+    return driver
 
 
 _STATUS_JS = (
@@ -324,10 +338,17 @@ class _SeleniumEngine:
 
     def __init__(self, args: argparse.Namespace, *, user_agent: Optional[str], client):
         self.args, self.user_agent, self.client = args, user_agent, client
+        self.media_blocked = False
 
     async def open(self, proxy) -> _SeleniumSession:
-        return _SeleniumSession(_build_driver(headless=self.args.headless, proxy=proxy,
-                                              cdp_endpoint=self.args.cdp_endpoint, user_agent=self.user_agent))
+        # Images, video and fonts are aborted behind a local proxy: every
+        # field is read from the page's embedded data, never from them.
+        block = proxy_savers.should_block_media(self.args, proxy_in_use=proxy is not None,
+                                                over_cdp=bool(self.args.cdp_endpoint))
+        driver = _build_driver(headless=self.args.headless, proxy=proxy, cdp_endpoint=self.args.cdp_endpoint,
+                               user_agent=self.user_agent, block_media=block)
+        self.media_blocked = self.media_blocked or bool(getattr(driver, "media_blocked", False))
+        return _SeleniumSession(driver)
 
     async def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
@@ -390,6 +411,13 @@ def run(args: argparse.Namespace) -> int:
                 user_agent = user_agent_from(profile)
                 if user_agent:
                     log.info("Fingerprint applied: user agent %s", user_agent)
+
+    # Before the browser, with the proxy exactly as Chrome will use it here
+    # (no password: Selenium's --proxy-server cannot send one).
+    stop = page_flow.precheck_proxy(args, proxy_pool, urls=urls, engine_name=ENGINE_NAME, started_at=started_at,
+                                    with_auth=False)
+    if stop is not None:
+        return stop
 
     try:
         return asyncio.run(page_flow.run(_SeleniumEngine(args, user_agent=user_agent, client=client), args, urls=urls,

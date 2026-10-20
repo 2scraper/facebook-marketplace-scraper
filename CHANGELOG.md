@@ -8,6 +8,28 @@ that changes a default is called out at the top of its entry.
 
 ## [Unreleased]
 
+> **Behaviour changes.** A local browser run through `--proxy` /
+> `--proxy-file` now sends one `HEAD` for `facebook.com/robots.txt`
+> through the proxy before the browser starts: a gateway `407` or `402`
+> ends the run with exit 5 and `<out>.latest_attempt.meta.json`
+> (`status: failed`, `stop_reason: proxy_auth_failed`), leaving the data
+> and `<out>.meta.json` as they were. Behind a local proxy, images,
+> video/audio and web fonts are no longer downloaded (`--load-media`
+> restores them). Nothing changes over `--cdp-endpoint`, with
+> `--scraper-api` or with no proxy.
+
+### Added
+
+- Proxy pre-check in all three browser engines. Any other answer, or a
+  transport error, lets the run go on as before. Selenium checks the
+  proxy without its password, as Chrome uses it there, and a `407` then
+  says to allow your IP in the proxy's settings.
+- Media blocking behind a local proxy: Playwright by resource type
+  (`context.route`), Puppeteer by resource type over CDP `Fetch` (inside
+  the interception that already answers a proxy password), Selenium by
+  file extension (`Network.setBlockedURLs`). `<out>.meta.json` records
+  `media_blocked`. New flag `--load-media` on every browser engine.
+
 ### Changed
 
 - CI only: a failed canary check now always ends with an `::error::` line. A run
