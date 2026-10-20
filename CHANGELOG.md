@@ -10,6 +10,11 @@ that changes a default is called out at the top of its entry.
 
 ### Changed
 
+- CI only: a failed canary check now always ends with an `::error::` line. A run
+  through the `FACEBOOK_PROXY` secret that exited nonzero used to end red with no
+  annotation, and a missing or wrong output file showed only a traceback.
+  The message notes that a proxy rejecting its credential (HTTP 407) shows
+  up in Chromium as a navigation timeout (exit 5), not as a 407.
 - CI only: the canary bills the `FACEBOOK_PROXY` exit, so it now runs weekly
   (Mondays 06:41 UTC) instead of daily; a manual dispatch still runs it.
 
