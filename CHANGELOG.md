@@ -62,6 +62,10 @@ that changes a default is called out at the top of its entry.
 - CI only: the canary bills the `FACEBOOK_PROXY` exit, so it now runs weekly
   (Mondays 06:41 UTC) instead of daily; a manual dispatch still runs it.
 
+### Fixed
+
+- Proxy traffic meter: Selenium and Puppeteer no longer count requests that never leave the browser. Chrome's new-tab page loads `chrome://` scripts (about 2.8 MB, seen through a stub proxy) that were reported as finished loads and added to `proxy_bytes`, enough to bring a run noticeably closer to `--proxy-budget-mb`. Only `http(s)` requests and responses are counted now. The block sent once the budget is spent is also handed to the page's own event loop, so it works when the budget runs out on another thread.
+
 ## [0.2.0] - 2026-10-15
 
 > **Behaviour changes.** `puppeteer_scraper.py` and `selenium_scraper.py`

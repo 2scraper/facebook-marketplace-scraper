@@ -224,7 +224,13 @@ class CdpEvents(unittest.TestCase):
         meter.feed_cdp("Network.loadingFinished", {"requestId": "e", "encodedDataLength": 250609})
         meter.feed_cdp("Network.responseReceived", {"requestId": "c", "response": {"fromDiskCache": True}})
         meter.feed_cdp("Network.loadingFinished", {"requestId": "c", "encodedDataLength": 900})
-        self.assertEqual(meter.bytes, sent + 1300, "an error page or a cache hit crossed no proxy")
+        meter.feed_cdp("Network.requestWillBeSent", {"requestId": "n", "request": {
+            "method": "GET", "url": "chrome://new-tab-page/x.js", "headers": {"A": "b"}}})
+        meter.feed_cdp("Network.responseReceived", {"requestId": "n",
+                                                    "response": {"url": "chrome://new-tab-page/x.js"}})
+        meter.feed_cdp("Network.loadingFinished", {"requestId": "n", "encodedDataLength": 6575})
+        self.assertEqual(meter.bytes, sent + 1300,
+                         "an error page, a cache hit or a chrome:// page crossed no proxy")
         before = meter.bytes
         meter.feed_cdp("Network.requestWillBeSent", {"requestId": "3", "request": {"method": "GET", "url": "data:x"}})
         self.assertEqual(meter.bytes, before, "a data: URL never crosses the proxy")
@@ -297,6 +303,36 @@ class CdpEvents(unittest.TestCase):
         self.assertIn(("Network.enable", {}), client.sent)
         self.assertEqual(meter.bytes, 2000)
         self.assertIn(("Network.setBlockedURLs", {"urls": ["*"]}), client.sent)
+
+    def test_pyppeteer_block_from_a_worker_thread(self):
+        """The budget can trip on a thread with no event loop (a concurrent
+        worker): the block is still sent, on the page's own loop."""
+        sent = []
+
+        class Client:
+            def on(self, name, fn):
+                pass
+
+            async def send(self, cmd, params=None):
+                sent.append(cmd)
+
+        async def create():
+            return Client()
+
+        page = argparse.Namespace(target=argparse.Namespace(createCDPSession=create))
+        meter = proxy_meter.ProxyMeter(0.001, active=True)
+
+        async def go():
+            await meter.attach_pyppeteer(page)
+            worker = threading.Thread(target=meter.add, args=(5000,))
+            worker.start()
+            worker.join()
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+        asyncio.run(go())
+        self.assertTrue(meter.exceeded)
+        self.assertIn("Network.setBlockedURLs", sent)
 
 
 class PlaywrightHooks(unittest.TestCase):

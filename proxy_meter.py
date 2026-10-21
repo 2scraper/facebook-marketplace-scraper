@@ -58,7 +58,8 @@ def budget_mb(value: str) -> float:
     try:
         number = float(value)
     except ValueError:
-        raise argparse.ArgumentTypeError("--proxy-budget-mb must be a number of megabytes, got %r" % value)
+        raise argparse.ArgumentTypeError("--proxy-budget-mb must be a number of megabytes, got %r"
+                                         % value) from None
     if number != number or number < 0 or number == float("inf"):
         raise argparse.ArgumentTypeError("--proxy-budget-mb must be >= 0 (0 = unlimited), got %r" % value)
     return number
@@ -80,6 +81,7 @@ def _header_bytes(headers: Any) -> int:
     `[{name, value}]`)."""
     if not headers:
         return 0
+    pairs: Iterable[Any]
     if isinstance(headers, dict):
         pairs = headers.items()
     else:
@@ -87,7 +89,7 @@ def _header_bytes(headers: Any) -> int:
     return sum(len(str(k)) + len(str(v)) + 4 for k, v in pairs)
 
 
-def _request_line_bytes(method: str, url: str) -> int:
+def _request_line_bytes(method: Optional[str], url: str) -> int:
     parts = urlsplit(url or "")
     target = (parts.path or "/") + ("?" + parts.query if parts.query else "")
     return len("%s %s HTTP/1.1\r\n" % (method or "GET", target)) + 2  # + the blank line
@@ -103,8 +105,8 @@ class ProxyMeter:
         self.exceeded = False
         self._lock = threading.Lock()
         self._reported = False
-        self._on_exceeded = []
-        self._partial = {}
+        self._on_exceeded: list = []
+        self._partial: dict = {}
 
     # ------------------------------------------------------------- counting
     def add(self, n: Any) -> bool:
@@ -247,8 +249,8 @@ class ProxyMeter:
                 self.add(redirect.get("encodedDataLength") or 0)
             request = params.get("request") or {}
             url = request.get("url") or ""
-            if url.startswith(("data:", "blob:", "about:", "chrome")):
-                return
+            if not url.startswith(("http://", "https://")):
+                return  # data:, blob:, chrome:// (the new-tab page), ... never cross the proxy
             body = request.get("postData") or ""
             self.add(_request_line_bytes(request.get("method"), url) + _header_bytes(request.get("headers"))
                      + len(body.encode("utf-8", "replace") if isinstance(body, str) else body))
@@ -256,10 +258,13 @@ class ProxyMeter:
             # Only a response that came over the network is counted at
             # loadingFinished: Chrome's own error page ("This site can't be
             # reached", ~250 KB) is reported as a finished load of the failed
-            # URL with no responseReceived, and a cache hit crossed nothing.
+            # URL with no responseReceived, the new-tab page's chrome://
+            # scripts (~2.8 MB, seen with Selenium) never leave the browser,
+            # and a cache hit crossed nothing.
             response = params.get("response") or {}
-            if not (response.get("fromDiskCache") or response.get("fromServiceWorker")
-                    or response.get("fromPrefetchCache")):
+            local = str(response.get("url") or "").split(":", 1)[0] not in ("", "http", "https")
+            if not local and not (response.get("fromDiskCache") or response.get("fromServiceWorker")
+                                  or response.get("fromPrefetchCache")):
                 with self._lock:
                     self._partial.setdefault(params.get("requestId"), 0)
         elif method == "Network.dataReceived":
@@ -300,8 +305,18 @@ class ProxyMeter:
             client.on(event, lambda params, _event=event: self.feed_cdp(_event, params))
         await client.send("Network.enable", {})
         if self.budget_bytes:
+            # The budget can trip on another thread (a concurrent worker) that
+            # has no event loop: hand the block to this page's own loop.
+            loop = asyncio.get_event_loop()
+
+            async def _send_block():
+                try:
+                    await client.send("Network.setBlockedURLs", {"urls": ["*"]})
+                except Exception:  # noqa: BLE001 - the loop check still stops the run
+                    pass
+
             def _block():
-                asyncio.ensure_future(client.send("Network.setBlockedURLs", {"urls": ["*"]}))
+                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_send_block()))
             self.on_exceeded(_block)
 
     def attach_selenium(self, driver, *, keep_entries: bool = True) -> None:
