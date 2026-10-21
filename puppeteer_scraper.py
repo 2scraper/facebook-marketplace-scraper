@@ -52,6 +52,7 @@ else:
 import env_config
 import listing_parser as lp
 import page_flow
+import proxy_meter
 import proxy_pool as proxy_savers
 import scraper_api_engine
 import scraper_api_client
@@ -354,6 +355,8 @@ class _PyppeteerEngine:
                                                 over_cdp=self.remote_browser is not None)
         page = await _open_page(browser, proxy=proxy, user_agent=self.user_agent, autosolve=self.autosolve,
                                 block_media=block)
+        if proxy is not None and self.remote_browser is None:
+            await proxy_meter.current().attach_pyppeteer(page)  # --proxy-budget-mb
         self.media_blocked = self.media_blocked or block
         return _PyppeteerSession(page, browser, owns_browser=self.remote_browser is None)
 
@@ -428,6 +431,7 @@ async def run(args: argparse.Namespace) -> int:
                 if user_agent:
                     log.info("Fingerprint applied: user agent %s", user_agent)
 
+    page_flow.start_proxy_meter(args, proxy_pool)
     # Before the browser: a gateway that refuses the credential (407) or has
     # no balance left (402) would refuse every request it makes.
     stop = page_flow.precheck_proxy(args, proxy_pool, urls=urls, engine_name=ENGINE_NAME, started_at=started_at)
