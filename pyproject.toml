@@ -31,6 +31,7 @@ Repository = "https://github.com/2scraper/facebook-marketplace-scraper"
 py-modules = [
     "env_config",
     "proxy_pool",
+    "proxy_meter",
     "output_writer",
     "captcha_solver",
     "fingerprint_client",

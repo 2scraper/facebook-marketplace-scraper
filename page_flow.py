@@ -41,6 +41,7 @@ from typing import Protocol as _Protocol
 import sys as _sys
 
 import listing_parser as lp
+import proxy_meter as _meter
 import proxy_pool as _proxies
 from captcha_solver import detect_from_html
 from output_writer import EXIT_REMOTE_API_ERROR as _EXIT_REMOTE_API_ERROR
@@ -243,6 +244,9 @@ async def fetch(engine: Engine, args, url: str, index: int, proxy_pool, *, kind:
     try:
         last_error, status = None, None
         for attempt in range(args.retries + 1):
+            if _meter.exceeded():
+                last_error = _meter.STOP_REASON
+                break
             try:
                 status = await session.goto(lp.fetch_url(url))
                 last_error = None
@@ -258,6 +262,9 @@ async def fetch(engine: Engine, args, url: str, index: int, proxy_pool, *, kind:
                     break  # a refused key or an empty balance: every retry would fail the same way
                 if attempt < args.retries:
                     await engine.sleep(args.retry_delay)
+        if last_error == _meter.STOP_REASON:
+            outcome.failure = _meter.STOP_REASON
+            return outcome
         if last_error is not None:
             _log.error("%s permanently failed to load: %s", url, last_error)
             outcome.failure = "remote_api_error" if getattr(engine, "last_remote_error", False) else "fetch_error"
@@ -436,6 +443,9 @@ async def _paginate(engine, args, session, state: _Run, outcome: Outcome, url: s
         return
     requests: List[tuple] = []
     for _ in range(WHEEL_ROUNDS):
+        if _meter.exceeded():
+            outcome.pagination = outcome.failure = _meter.STOP_REASON
+            return  # --proxy-budget-mb: no further scroll through the proxy
         # The login dialog can be drawn after the listings; while it is up
         # it swallows the scroll, so it is closed before every round.
         await session.dismiss_dialog()
@@ -474,6 +484,10 @@ async def _paginate(engine, args, session, state: _Run, outcome: Outcome, url: s
         if errors or has_next is not True or not cursor:
             outcome.pagination, outcome.failure = "error", "stalled"
             _log.warning("%s: pagination returned errors or no valid cursor — keeping the rows as partial.", url)
+            return
+        if _meter.exceeded():
+            outcome.pagination = outcome.failure = _meter.STOP_REASON
+            _log.warning("%s: the proxy budget is spent — keeping the %d listings read.", url, len(outcome.rows))
             return
         data = lp.next_request(form, cursor)
         if data is None:
@@ -517,7 +531,7 @@ def _add(state: _Run, row: Product, outcome: Outcome) -> None:
 
 def _should_stop(engine, state: _Run, outcome: Outcome, proxy_pool, rest: List[str]) -> bool:
     state.consecutive_blocks = state.consecutive_blocks + 1 if outcome.blocked else 0
-    stop = (outcome.failure == "proxy_pool_exhausted" or getattr(engine, "fatal", None)
+    stop = (outcome.failure == "proxy_pool_exhausted" or getattr(engine, "fatal", None) or _meter.exceeded()
             or (proxy_pool is None and state.consecutive_blocks >= STOP_AFTER_CONSECUTIVE_BLOCKS))
     if stop and rest:
         if proxy_pool is None and state.consecutive_blocks >= STOP_AFTER_CONSECUTIVE_BLOCKS:
@@ -548,7 +562,8 @@ async def _details(engine, args, state: _Run, proxy_pool, *, start_index: int) -
             return
 
 
-_INCOMPLETE_REASONS = ("rate_limited", "stalled", "not_painted", "parse_error", "proxy_pool_exhausted")
+_INCOMPLETE_REASONS = ("rate_limited", "stalled", "not_painted", "parse_error", "proxy_pool_exhausted",
+                       _meter.STOP_REASON)
 
 
 def finish_run(args, state: _Run, *, engine_name: str, urls: List[str], started_at: float,
@@ -601,6 +616,14 @@ def finish(args, *, products: List[Product], blocked: bool, remote_api_error: bo
 PRECHECK_TIMEOUT_S = 20
 
 
+def start_proxy_meter(args, proxy_pool) -> "_meter.ProxyMeter":
+    """Meter this run's traffic when it goes through a LOCAL proxy (not
+    over --cdp-endpoint, not the Scraper API, not without a proxy)."""
+    active = (proxy_pool is not None and not getattr(args, "cdp_endpoint", None)
+              and not getattr(args, "scraper_api", False))
+    return _meter.start(getattr(args, "proxy_budget_mb", _meter.DEFAULT_BUDGET_MB), active=active)
+
+
 def precheck_proxy(args, proxy_pool, *, urls: List[str], engine_name: str, started_at: float,
                    with_auth: bool = True) -> Optional[int]:
     """ONE HEAD for facebook.com/robots.txt through the proxy the first
@@ -639,6 +662,7 @@ def add_media_arguments(p) -> None:
                         "aborts them (no field here is read from them, and the proxy bills per byte); nothing is "
                         "blocked with --cdp-endpoint or with no proxy")
     p.add_argument("--force-block-media", action="store_true", help=_argparse.SUPPRESS)
+    _meter.add_budget_argument(p)
 
 
 def validate_common(args, *, urls, skipped, print_err) -> Optional[int]:

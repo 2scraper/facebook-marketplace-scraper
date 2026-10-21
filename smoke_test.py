@@ -1665,7 +1665,11 @@ def _():
 def _():
     for mod in _ENGINES:
         code, started, hits, _t, attempt, _f, _d = _run_through_stub_proxy(mod, 403)
-        assert started == 1 and len(hits) == 1 and attempt == {}, (mod.__name__, started, hits, attempt)
+        # No pre-check verdict. Since --proxy-budget-mb, a proxied run that wrote no data records its own
+        # outcome and traffic in the attempt sidecar — never as the pre-check's proxy_auth_failed.
+        assert started == 1 and len(hits) == 1, (mod.__name__, started, hits, attempt)
+        assert attempt == {} or (attempt.get("stop_reason") != "proxy_auth_failed" and "proxy_bytes" in attempt), \
+            (mod.__name__, attempt)
     assert proxy_pool.precheck_proxy("http://user:pass@127.0.0.1:1", "https://x.invalid/robots.txt", 3) is None
     assert proxy_pool.precheck_proxy(None, "https://www.facebook.com/robots.txt") is None
     assert proxy_pool.robots_url(_BIKE_URL) == "https://www.facebook.com/robots.txt"
@@ -1896,6 +1900,307 @@ def _():
         source = (ROOT / f"{name}.py").read_text(encoding="utf-8")
         assert "should_block_media(" in source and f"{call}" in source, name
         assert "page_flow.precheck_proxy(" in source, name
+
+
+# --------------------------------------------------------------------------- #
+# Proxy traffic meter and --proxy-budget-mb (proxy_meter.py; its own byte
+# counts against a stub proxy are in tests/test_proxy_meter.py)
+# --------------------------------------------------------------------------- #
+import proxy_meter  # noqa: E402
+
+_SOFA_URL = "https://www.facebook.com/marketplace/nyc/search/?query=sofa"
+
+
+class _MeteredEngine(_FakeEngine):
+    """_FakeEngine whose navigations, wheel scrolls and pagination requests
+    cost `cost` proxy bytes each."""
+
+    def __init__(self, by_url, cost):
+        super().__init__(by_url)
+        self.cost = cost
+        self.can_paginate = True
+
+    async def open(self, proxy):
+        session = await super().open(proxy)
+        for name in ("goto", "wheel", "post_form"):
+            original = getattr(session, name)
+
+            async def metered(*a, _original=original):
+                proxy_meter.current().add(self.cost)
+                return await _original(*a)
+            setattr(session, name, metered)
+        return session
+
+
+def _metered_run(by_url, urls, *, budget_mb, cost, active=True, argv=()):
+    import contextlib
+    import io
+    args = playwright_scraper.build_arg_parser().parse_args(
+        ["--url", urls[0], "--max-results", "500", "--delay-between-pages", "0",
+         "--proxy-budget-mb", str(budget_mb), *argv])
+    args._solve_budget = page_flow.SolveBudget(0)
+    proxy_meter.start(args.proxy_budget_mb, active=active)
+    engine = _MeteredEngine(by_url, cost)
+    err = io.StringIO()
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            args.out = str(Path(td) / "o.json")
+            Path(args.out).write_text("[]")  # a previous run's data
+            with contextlib.redirect_stderr(err):
+                rc = asyncio.run(page_flow.run(engine, args, urls=urls, proxy_pool=None, client=None, started_at=0.0))
+            read = lambda suffix: json.loads(Path(args.out + suffix).read_text()) if Path(args.out + suffix).exists() else None  # noqa: E731
+            meta, attempt, rows = read(".meta.json"), read(output_writer.ATTEMPT_META_SUFFIX), read("")
+    finally:
+        proxy_meter.start(None, active=False)
+    return rc, meta, attempt, rows, engine, err.getvalue()
+
+
+@check("proxy budget: once the metered bytes pass --proxy-budget-mb the run sends no further pagination request and opens no further search — the rows already read are kept, exit 6, stop_reason proxy_budget_exceeded, the sidecar carries proxy_bytes / proxy_budget_bytes / proxy_budget_exceeded, and one 'Proxy traffic' line is printed")
+def _():
+    answers = [(200, _answer(n)) for n in range(1, 10)]
+    # 1,000-byte budget, 400 bytes per navigation, wheel or request: over it on the first replayed request.
+    rc, meta, attempt, rows, eng, err = _metered_run({_BIKE_URL: _paged(answers=answers), "*": _paged(answers=answers)},
+                                                     [_BIKE_URL, _SOFA_URL], budget_mb=0.001, cost=400)
+    assert rc == output_writer.EXIT_PARTIAL, (rc, err[-500:])
+    assert len(eng.sessions) == 1 and len(eng.sessions[0].posted) == 1, "no request and no search after the budget"
+    assert rows and len(rows) == 18, len(rows or [])
+    assert meta["status"] == "partial" and meta["stop_reason"] == "proxy_budget_exceeded", meta
+    assert (meta["proxy_bytes"], meta["proxy_budget_bytes"], meta["proxy_budget_exceeded"]) == (1200, 1000, True), meta
+    assert meta["pages"][0]["pagination"] == "proxy_budget_exceeded" and meta["pages"][1]["result"] == "not_attempted", meta["pages"]
+    assert err.count("Proxy traffic: 0.0 MB of 0.001 MB budget") == 1, err[-500:]
+    assert attempt is None, "a run that wrote its rows has nothing to put in the attempt sidecar"
+    # Spent by the first wheel round: no second round, no request.
+    rc, meta, _a, rows, eng, err = _metered_run({_BIKE_URL: _paged(answers=answers, request_after=3)}, [_BIKE_URL],
+                                                budget_mb=0.001, cost=600)
+    assert rc == output_writer.EXIT_PARTIAL and eng.sessions[0].wheels == 1 and not eng.sessions[0].posted, (rc, eng.sessions[0].wheels)
+    assert len(rows) == 6 and meta["stop_reason"] == "proxy_budget_exceeded"
+
+
+@check("proxy budget: spent before any listing was read -> exit 5 (not 4, not 3); the previous data and .meta.json stay, and <out>.latest_attempt.meta.json records stop_reason proxy_budget_exceeded with the byte count; --details is not started after the budget")
+def _():
+    rc, meta, attempt, rows, eng, err = _metered_run({"*": {"html": "<html><title>x</title></html>"}},
+                                                     [_BIKE_URL, _SOFA_URL], budget_mb=0.001, cost=5000)
+    assert rc == output_writer.EXIT_REMOTE_API_ERROR, (rc, err[-400:])
+    assert rows == [] and meta is None, "the previous data stays and no .meta.json is written"
+    assert (attempt["stop_reason"], attempt["proxy_bytes"], attempt["proxy_budget_exceeded"]) == \
+        ("proxy_budget_exceeded", 5000, True), attempt
+    assert attempt["data_updated"] is False and len(eng.sessions) == 1, attempt
+    assert "Proxy traffic: 0.0 MB of 0.001 MB budget" in err
+    # A navigation that failed after spending the budget is not retried.
+    rc, meta, attempt, rows, eng, err = _metered_run({"*": {"goto": RuntimeError("net::ERR_TIMED_OUT")}}, [_BIKE_URL],
+                                                     budget_mb=0.001, cost=5000, argv=["--retries", "2", "--retry-delay", "0"])
+    assert rc == output_writer.EXIT_REMOTE_API_ERROR and len(eng.fetched) == 1, (rc, eng.fetched)
+    assert attempt["stop_reason"] == "proxy_budget_exceeded", attempt
+    rc, meta, _a, rows, eng, err = _metered_run({_BIKE_URL: {"html": _fx("search_bike_nyc")}}, [_BIKE_URL],
+                                                budget_mb=0.001, cost=5000, argv=["--details"])
+    assert rc == output_writer.EXIT_PARTIAL and len(eng.sessions) == 1 and len(rows) == 6, (rc, len(eng.sessions))
+
+
+@check("proxy budget: with no local proxy nothing is metered or stopped — proxy_bytes is null, no 'Proxy traffic' line; --proxy-budget-mb 0 is unlimited; a run under its budget is complete (exit 0) and records its bytes")
+def _():
+    end = [(200, _answer(1)), (200, _answer(2, has_next=False))]
+    rc, meta, _a, rows, _e, err = _metered_run({_BIKE_URL: _paged(answers=end)}, [_BIKE_URL], budget_mb=0.001,
+                                               cost=10 ** 9, active=False)
+    assert rc == output_writer.EXIT_OK and meta["proxy_bytes"] is None and meta["proxy_budget_exceeded"] is False, meta
+    assert "Proxy traffic" not in err
+    rc, meta, _a, rows, _e, err = _metered_run({_BIKE_URL: _paged(answers=end)}, [_BIKE_URL], budget_mb=0, cost=10 ** 9)
+    assert rc == output_writer.EXIT_OK and meta["proxy_budget_bytes"] is None and meta["proxy_bytes"] > 10 ** 9, meta
+    rc, meta, _a, rows, _e, err = _metered_run({_BIKE_URL: _paged(answers=end)}, [_BIKE_URL], budget_mb=10, cost=1000)
+    assert rc == output_writer.EXIT_OK and meta["proxy_bytes"] == 4000 and meta["proxy_budget_bytes"] == 10 ** 7, (rc, meta)
+    assert "Proxy traffic: 0.0 MB of 10 MB budget" in err
+
+
+@check("proxy budget: finish_run puts the budget stop above every other outcome — a run that also met a block or a failed page still ends 6 with rows and 5 without, stop_reason proxy_budget_exceeded")
+def _():
+    import dataclasses
+    rows = [output_writer.Product(**{f.name: None for f in dataclasses.fields(output_writer.Product)
+                                     if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING})]
+    rows[0].sku = "facebook-marketplace-1"
+    try:
+        for products, blocked, failed, want in ((rows, True, [], 6), ([], True, [], 5), (rows, False, [2], 6), ([], False, [], 5)):
+            proxy_meter.start(0.001, active=True)
+            proxy_meter.current().add(5000)
+            with tempfile.TemporaryDirectory() as td:
+                out = str(Path(td) / "o.json")
+                rc = output_writer.finish_run(products=products, out_path=out, fmt="json", engine="t", url="u",
+                                              pages_requested=2, pages_completed=1, failed_pages=failed, blocked=blocked,
+                                              remote_api_error=False, allow_empty=False, started_at=0.0)
+                path = Path(out + (".meta.json" if products else output_writer.ATTEMPT_META_SUFFIX))
+                meta = json.loads(path.read_text())
+            assert rc == want and meta["stop_reason"] == "proxy_budget_exceeded", (blocked, failed, rc, meta)
+            assert meta["proxy_budget_exceeded"] is True and meta["proxy_bytes"] == 5000, meta
+    finally:
+        proxy_meter.start(None, active=False)
+
+
+@check("proxy budget: --proxy-budget-mb is on every engine (default 10, 0 = unlimited, a negative or non-number value is a usage error naming the flag); the meter is active only for a LOCAL proxy — never over --cdp-endpoint, --scraper-api or with no proxy")
+def _():
+    import argparse
+    import contextlib
+    import io
+    for mod in _ENGINES:
+        parser = mod.build_arg_parser()
+        assert parser.parse_args(["--query", "x"]).proxy_budget_mb == 10, mod.__name__
+        assert "--proxy-budget-mb" in parser.format_help(), mod.__name__
+        for bad in ("-1", "lots"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                try:
+                    parser.parse_args(["--query", "x", "--proxy-budget-mb", bad])
+                    raise AssertionError("accepted %s" % bad)
+                except SystemExit as exc:
+                    assert exc.code == 2
+            assert "--proxy-budget-mb" in err.getvalue(), err.getvalue()
+        source = (ROOT / f"{mod.__name__}.py").read_text(encoding="utf-8")
+        assert source.index("page_flow.start_proxy_meter(") < source.index("page_flow.precheck_proxy("), mod.__name__
+    pool = proxy_pool.ProxyPool([proxy_pool.parse_proxy_line("h:1")])
+    ns = lambda **k: argparse.Namespace(**{"proxy_budget_mb": 10, "cdp_endpoint": None, "scraper_api": False, **k})  # noqa: E731
+    try:
+        assert page_flow.start_proxy_meter(ns(), pool).active is True
+        assert page_flow.start_proxy_meter(ns(), None).active is False
+        assert page_flow.start_proxy_meter(ns(cdp_endpoint="ws://h"), pool).active is False
+        assert page_flow.start_proxy_meter(ns(scraper_api=True), pool).active is False
+    finally:
+        proxy_meter.start(None, active=False)
+
+
+@check("proxy meter wiring: Playwright counts a proxied LOCAL context (requestfinished + requestfailed) and adds the budget route after the media route; Selenium tees its performance log; pyppeteer opens a counting CDP session; none of it over --cdp-endpoint or with no proxy")
+def _():
+    import argparse
+    from unittest import mock
+
+    class Context:
+        def __init__(self):
+            self.routes, self.events = [], []
+
+        def on(self, name, fn):
+            self.events.append(name)
+
+        async def route(self, pattern, handler):
+            self.routes.append(handler)
+
+        async def new_page(self):
+            return type("P", (), {"on": lambda *a: None})()
+
+    class Browser:
+        def __init__(self):
+            self.contexts = [Context()]
+
+        async def new_context(self, **kw):
+            return Context()
+
+    proxy = proxy_pool.parse_proxy_line("h:1:u:p")
+    try:
+        for use_proxy, cdp, argv, want_events, want_routes in (
+                (True, False, [], True, 2), (True, False, ["--proxy-budget-mb", "0"], True, 1),
+                (True, False, ["--load-media"], True, 1), (False, False, [], False, 0), (True, True, [], False, 0)):
+            args = playwright_scraper.build_arg_parser().parse_args(["--query", "x", *argv])
+            args.cdp_endpoint = "ws://h:1" if cdp else None
+            proxy_meter.start(args.proxy_budget_mb, active=use_proxy and not cdp)
+            engine = playwright_scraper._PlaywrightEngine(Browser(), args, autosolve=False, user_agent=None, client=None)
+            session = asyncio.run(engine.open(proxy if use_proxy else None))
+            context = session.context
+            assert (sorted(set(context.events)) == ["requestfailed", "requestfinished"]) is want_events, (argv, context.events)
+            assert len(context.routes) == want_routes, (argv, use_proxy, cdp, context.routes)
+            if want_routes and args.proxy_budget_mb:
+                assert context.routes[-1] == proxy_meter.current().playwright_budget_route_async
+
+        class Driver:
+            def __init__(self, *a, **k):
+                self.sent = []
+
+            def execute_cdp_cmd(self, cmd, params):
+                self.sent.append((cmd, params))
+
+            def get_log(self, kind):
+                return []
+
+            def quit(self):
+                pass
+
+        with mock.patch.object(selenium_scraper, "webdriver", type("W", (), {"Chrome": Driver})), \
+                mock.patch.object(selenium_scraper, "Options", _SeleniumOptions), \
+                mock.patch.object(selenium_scraper, "Service", None):
+            for use_proxy, cdp, want in ((True, False, True), (False, False, False), (True, True, False)):
+                args = selenium_scraper.build_arg_parser().parse_args(["--query", "x"])
+                args.cdp_endpoint = "ws://127.0.0.1:9222" if cdp else None
+                proxy_meter.start(10, active=use_proxy and not cdp)
+                engine = selenium_scraper._SeleniumEngine(args, user_agent=None, client=None)
+                session = asyncio.run(engine.open(proxy_pool.parse_proxy_line("h:1") if use_proxy else None))
+                assert hasattr(session.driver, "_proxy_meter_poll") is want, (use_proxy, cdp)
+
+        attached = []
+
+        async def fake_attach(self, page):
+            attached.append(page)
+
+        async def fake_launch(**kw):
+            return "browser"
+
+        async def fake_open_page(browser, **kw):
+            return argparse.Namespace(on=lambda *a: None)
+        with mock.patch.object(puppeteer_scraper, "_launch", fake_launch), \
+                mock.patch.object(puppeteer_scraper, "_open_page", fake_open_page), \
+                mock.patch.object(proxy_meter.ProxyMeter, "attach_pyppeteer", fake_attach):
+            for use_proxy, remote, want in ((True, None, 1), (False, None, 0), (True, "remote", 0)):
+                attached.clear()
+                args = puppeteer_scraper.build_arg_parser().parse_args(["--query", "x"])
+                proxy_meter.start(10, active=use_proxy and not remote)
+                engine = puppeteer_scraper._PyppeteerEngine(args, remote_browser=remote, autosolve=False,
+                                                            user_agent=None, client=None)
+                asyncio.run(engine.open(proxy if use_proxy else None))
+                assert len(attached) == want, (use_proxy, remote, attached)
+    finally:
+        proxy_meter.start(None, active=False)
+
+
+@check("canary: both runs pass --proxy-budget-mb 10 and each is followed by an always-run 'Proxy traffic' step for its own output; that step writes '**canary**: proxy traffic X.X MB of 10 MB' to the job summary, is red with '::error::stopped: proxy budget 10 MB exceeded' when the run stopped at the budget, and copes with a missing sidecar")
+def _():
+    import subprocess
+    import sys
+    if not (ROOT / ".github").is_dir():
+        return  # the Docker image ships no workflows; the repository's own CI runs this check
+    text = (ROOT / ".github" / "workflows" / "canary.yml").read_text(encoding="utf-8")
+    runs = [line for line in text.replace("\\\n", " ").splitlines() if "_scraper.py" in line and "--out" in line]
+    assert len(runs) == 2 and all("--proxy-budget-mb 10" in line for line in runs), runs
+    steps = text.split("- name: ")
+    for out, label in (("canary.json", "canary"), ("canary_details.json", "canary (details)")):
+        summary_steps = [s for s in steps if s.startswith("Proxy traffic") and
+                         "python3 .github/proxy_traffic_summary.py %s \"%s\" 10" % (out, label) in s]
+        assert len(summary_steps) == 1 and "if: always()" in summary_steps[0], (out, "no summary step")
+        assert text.index("--out " + out) < text.index("proxy_traffic_summary.py " + out)
+    script = str(ROOT / ".github" / "proxy_traffic_summary.py")
+    with tempfile.TemporaryDirectory() as tmp:
+        summary = Path(tmp) / "summary.md"
+        env = dict(os.environ, GITHUB_STEP_SUMMARY=str(summary))
+
+        def summarise(meta=None, attempt=None):
+            for suffix, data in ((".meta.json", meta), (".latest_attempt.meta.json", attempt)):
+                path = Path(tmp) / ("canary.json" + suffix)
+                path.unlink() if path.exists() else None
+                if data is not None:
+                    path.write_text(json.dumps(data), encoding="utf-8")
+            return subprocess.run([sys.executable, script, "canary.json", "canary", "10"], cwd=tmp, env=env,
+                                  capture_output=True, text=True, timeout=60)
+        proc = summarise({"proxy_bytes": 4_321_000, "proxy_budget_bytes": 10 ** 7, "proxy_budget_exceeded": False,
+                          "finished_at": 2})
+        assert proc.returncode == 0 and "::error::" not in proc.stdout, proc.stdout
+        assert summary.read_text().splitlines()[-1] == "**canary**: proxy traffic 4.3 MB of 10 MB"
+        proc = summarise(None, {"proxy_bytes": 10_200_000, "proxy_budget_bytes": 10 ** 7,
+                                "proxy_budget_exceeded": True, "finished_at": 3})
+        assert proc.returncode == 1 and "::error::stopped: proxy budget 10 MB exceeded" in proc.stdout, proc.stdout
+        assert summary.read_text().splitlines()[-1] == "**canary**: proxy traffic 10.2 MB of 10 MB"
+        proc = summarise({"proxy_bytes": 1, "proxy_budget_exceeded": False, "finished_at": 1},
+                         {"proxy_bytes": 10_200_000, "proxy_budget_exceeded": True, "finished_at": 5})
+        assert proc.returncode == 1, "the newer of the two sidecars is the run's"
+        proc = summarise()
+        assert proc.returncode == 0 and "not recorded" in summary.read_text().splitlines()[-1], proc.stdout
+        proc = summarise({"proxy_bytes": None, "proxy_budget_exceeded": False})
+        assert proc.returncode == 0 and "no local proxy" in summary.read_text().splitlines()[-1]
+        (Path(tmp) / "canary.json.meta.json").write_text("{not json", encoding="utf-8")
+        proc = subprocess.run([sys.executable, script, "canary.json", "canary", "10"], cwd=tmp, env=env,
+                              capture_output=True, text=True, timeout=60)
+        assert proc.returncode == 0 and "unreadable" in proc.stdout, proc.stdout
 
 
 def run() -> int:

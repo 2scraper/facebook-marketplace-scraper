@@ -319,8 +319,10 @@ def precheck_proxy(proxy_url: Optional[str], probe_url: Optional[str],
     except ImportError:
         return None
     try:
+        import proxy_meter  # the HEAD goes through the proxy too: it counts toward --proxy-budget-mb
         response = requests.head(probe_url, proxies={"http": proxy_url, "https": proxy_url},
-                                 timeout=timeout, allow_redirects=False)
+                                 timeout=timeout, allow_redirects=False,
+                                 hooks={"response": proxy_meter.current().requests_hook})
     except requests.exceptions.ProxyError as exc:
         # An https target: the gateway answers the CONNECT, and urllib3
         # reports its status line as "Tunnel connection failed: 407 ...".

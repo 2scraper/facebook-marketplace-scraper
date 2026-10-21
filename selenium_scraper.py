@@ -55,6 +55,7 @@ else:
 import env_config
 import listing_parser as lp
 import page_flow
+import proxy_meter
 import proxy_pool as proxy_savers
 import scraper_api_engine
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH
@@ -306,6 +307,7 @@ class _SeleniumSession:
         self.driver.set_page_load_timeout(NAV_TIMEOUT_S)
         self.driver.get(url)
         time.sleep(READINESS_WAIT_S)
+        proxy_meter.current().poll_selenium(self.driver)  # --proxy-budget-mb
         try:
             reported = self.driver.execute_script(_STATUS_JS)
             return int(reported) if reported else None
@@ -326,6 +328,7 @@ class _SeleniumSession:
 
 
     async def close(self) -> None:
+        proxy_meter.current().poll_selenium(self.driver)  # what the last page still loaded
         _quit(self.driver)
 
 
@@ -348,6 +351,10 @@ class _SeleniumEngine:
         driver = _build_driver(headless=self.args.headless, proxy=proxy, cdp_endpoint=self.args.cdp_endpoint,
                                user_agent=self.user_agent, block_media=block)
         self.media_blocked = self.media_blocked or bool(getattr(driver, "media_blocked", False))
+        if proxy is not None and not self.args.cdp_endpoint:
+            # Counted from the performance log the engine already enables;
+            # the engine's own get_log readers still see every entry.
+            proxy_meter.current().attach_selenium(driver, keep_entries=True)
         return _SeleniumSession(driver)
 
     async def sleep(self, seconds: float) -> None:
@@ -412,6 +419,7 @@ def run(args: argparse.Namespace) -> int:
                 if user_agent:
                     log.info("Fingerprint applied: user agent %s", user_agent)
 
+    page_flow.start_proxy_meter(args, proxy_pool)
     # Before the browser, with the proxy exactly as Chrome will use it here
     # (no password: Selenium's --proxy-server cannot send one).
     stop = page_flow.precheck_proxy(args, proxy_pool, urls=urls, engine_name=ENGINE_NAME, started_at=started_at,
