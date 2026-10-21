@@ -6,9 +6,11 @@
 Reads `<out>.meta.json` and `<out>.latest_attempt.meta.json` (the newer of
 the two when both exist), appends `**<label>**: proxy traffic X.X MB of
 <budget> MB` to $GITHUB_STEP_SUMMARY, and exits 1 with an `::error::` line
-when the run stopped at its proxy budget. A missing or unreadable sidecar,
-or a run that used no local proxy, is reported and is not a failure here:
-the canary's own check step judges the run itself.
+when the run stopped at its proxy budget. <budget> is the run's own,
+`proxy_budget_bytes` in the sidecar (`null` there = no cap); `budget_mb` is
+only the fallback for a sidecar without that field (default 10). A missing
+or unreadable sidecar, or a run that used no local proxy, is reported and is
+not a failure here: the canary's own check step judges the run itself.
 """
 import json
 import os
@@ -28,9 +30,12 @@ def _load(path):
 
 
 def summarise(out, label, budget_mb=10.0):
-    """Return (line, whether the run stopped at its proxy budget)."""
+    """Return (line, whether the run stopped at its proxy budget, budget text)."""
     metas = [m for m in (_load(out + ".meta.json"), _load(out + ".latest_attempt.meta.json")) if m]
     meta = max(metas, key=lambda m: m.get("finished_at") or 0) if metas else None
+    if meta is not None and "proxy_budget_bytes" in meta:
+        cap = meta.get("proxy_budget_bytes")
+        budget_mb = cap / 1e6 if isinstance(cap, (int, float)) and cap > 0 else 0
     budget = "%g MB" % budget_mb if budget_mb else "no"
     if meta is None:
         line = "**%s**: proxy traffic not recorded (no sidecar for %s)" % (label, out)
@@ -41,7 +46,7 @@ def summarise(out, label, budget_mb=10.0):
     else:
         line = "**%s**: proxy traffic %.1f MB of %s" % (label, (meta.get("proxy_bytes") or 0) / 1e6, budget)
     exceeded = bool(meta and meta.get("proxy_budget_exceeded"))
-    return line, exceeded
+    return line, exceeded, budget
 
 
 def main(argv):
@@ -52,7 +57,7 @@ def main(argv):
         budget_mb = float(argv[3]) if len(argv) > 3 else 10.0
     except ValueError:
         budget_mb = 10.0
-    line, exceeded = summarise(argv[1], argv[2], budget_mb)
+    line, exceeded, budget = summarise(argv[1], argv[2], budget_mb)
     print(line)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
@@ -62,7 +67,7 @@ def main(argv):
         except OSError as exc:
             print("::warning::could not write the job summary: %s" % exc)
     if exceeded:
-        print("::error::stopped: proxy budget %g MB exceeded" % budget_mb)
+        print("::error::stopped: proxy budget %s exceeded" % budget)
         return 1
     return 0
 

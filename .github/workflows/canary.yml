@@ -49,22 +49,25 @@ jobs:
         run: |
           set +e
           python3 playwright_scraper.py --query "$CANARY_QUERY" --location "$CANARY_LOCATION" \
-            --format json --out canary.json --dump-html --proxy-budget-mb 10
+            --format json --out canary.json --dump-html --proxy-budget-mb 25
           echo "canary_exit=$?" >> "$GITHUB_ENV"
           python3 playwright_scraper.py --query "$CANARY_QUERY" --location "$CANARY_LOCATION" \
             --sort creation_time_descend --details --max-results 3 --format json --out canary_details.json \
-            --proxy-budget-mb 10
+            --proxy-budget-mb 25
           echo "canary_details_exit=$?" >> "$GITHUB_ENV"
 
-      # What each run sent through FACEBOOK_PROXY, read from its sidecar; red
-      # when it stopped at the 10 MB budget (stop_reason proxy_budget_exceeded).
+      # What each run sent through FACEBOOK_PROXY and the budget it ran under,
+      # both read from its sidecar; red when it stopped at that budget
+      # (stop_reason proxy_budget_exceeded). The canary passes 25 MB, above
+      # the scraper's 10 MB default: measured 2026-10-21, the search run used
+      # 3.5 MB and the --details run 11.4 MB, over a 10 MB cap.
       - name: Proxy traffic (search)
         if: always()
-        run: python3 .github/proxy_traffic_summary.py canary.json "canary" 10
+        run: python3 .github/proxy_traffic_summary.py canary.json "canary"
 
       - name: Proxy traffic (details)
         if: always()
-        run: python3 .github/proxy_traffic_summary.py canary_details.json "canary (details)" 10
+        run: python3 .github/proxy_traffic_summary.py canary_details.json "canary (details)"
 
       - name: Require complete runs with full rows
         run: |

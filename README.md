@@ -224,6 +224,13 @@ runner (Azure, westus3) with no proxy: both canary searches were sent to
 the login page (exit 3). The weekly canary therefore needs the
 `FACEBOOK_PROXY` repo secret, and is red (not skipped) without it.
 
+The canary's two runs pass `--proxy-budget-mb 25`, above the scraper's own
+10 MB default, which is unchanged. Measured 2026-10-21 through
+`FACEBOOK_PROXY`: the search run used 3.5 MB and the `--details` run
+11.4 MB, so a 10 MB canary stopped a healthy run. The job summary shows each
+run's traffic against the budget recorded in its sidecar
+(`proxy_budget_bytes`), and a run that hits 25 MB still fails the job.
+
 ## Proxy traffic: pre-check and media
 
 The pre-check, media blocking and the traffic budget below apply only to a **local** browser going through `--proxy` /

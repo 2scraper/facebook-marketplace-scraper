@@ -2154,7 +2154,7 @@ def _():
         proxy_meter.start(None, active=False)
 
 
-@check("canary: both runs pass --proxy-budget-mb 10 and each is followed by an always-run 'Proxy traffic' step for its own output; that step writes '**canary**: proxy traffic X.X MB of 10 MB' to the job summary, is red with '::error::stopped: proxy budget 10 MB exceeded' when the run stopped at the budget, and copes with a missing sidecar")
+@check("canary: both runs pass --proxy-budget-mb 25 (above the scraper's 10 MB default) and each is followed by an always-run 'Proxy traffic' step for its own output; that step writes '**canary**: proxy traffic X.X MB of 25 MB' to the job summary with the budget read from the sidecar's proxy_budget_bytes (not a fixed number), is red with '::error::stopped: proxy budget 25 MB exceeded' when the run stopped at the budget, and copes with a missing sidecar")
 def _():
     import subprocess
     import sys
@@ -2162,11 +2162,13 @@ def _():
         return  # the Docker image ships no workflows; the repository's own CI runs this check
     text = (ROOT / ".github" / "workflows" / "canary.yml").read_text(encoding="utf-8")
     runs = [line for line in text.replace("\\\n", " ").splitlines() if "_scraper.py" in line and "--out" in line]
-    assert len(runs) == 2 and all("--proxy-budget-mb 10" in line for line in runs), runs
+    # 25 MB, measured 2026-10-21: the --details run used 11.4 MB, over the 10 MB default.
+    assert len(runs) == 2 and all(re.search(r"--proxy-budget-mb 25(?!\d)", line) for line in runs), runs
     steps = text.split("- name: ")
     for out, label in (("canary.json", "canary"), ("canary_details.json", "canary (details)")):
         summary_steps = [s for s in steps if s.startswith("Proxy traffic") and
-                         "python3 .github/proxy_traffic_summary.py %s \"%s\" 10" % (out, label) in s]
+                         re.search(r'python3 \.github/proxy_traffic_summary\.py %s "%s"\s*$' % (re.escape(out), re.escape(label)),
+                                   s, re.M)]
         assert len(summary_steps) == 1 and "if: always()" in summary_steps[0], (out, "no summary step")
         assert text.index("--out " + out) < text.index("proxy_traffic_summary.py " + out)
     script = str(ROOT / ".github" / "proxy_traffic_summary.py")
@@ -2180,16 +2182,27 @@ def _():
                 path.unlink() if path.exists() else None
                 if data is not None:
                     path.write_text(json.dumps(data), encoding="utf-8")
-            return subprocess.run([sys.executable, script, "canary.json", "canary", "10"], cwd=tmp, env=env,
+            return subprocess.run([sys.executable, script, "canary.json", "canary"], cwd=tmp, env=env,
                                   capture_output=True, text=True, timeout=60)
-        proc = summarise({"proxy_bytes": 4_321_000, "proxy_budget_bytes": 10 ** 7, "proxy_budget_exceeded": False,
+        proc = summarise({"proxy_bytes": 4_321_000, "proxy_budget_bytes": 25 * 10 ** 6, "proxy_budget_exceeded": False,
                           "finished_at": 2})
         assert proc.returncode == 0 and "::error::" not in proc.stdout, proc.stdout
-        assert summary.read_text().splitlines()[-1] == "**canary**: proxy traffic 4.3 MB of 10 MB"
-        proc = summarise(None, {"proxy_bytes": 10_200_000, "proxy_budget_bytes": 10 ** 7,
+        assert summary.read_text().splitlines()[-1] == "**canary**: proxy traffic 4.3 MB of 25 MB"
+        proc = summarise(None, {"proxy_bytes": 25_200_000, "proxy_budget_bytes": 25 * 10 ** 6,
                                 "proxy_budget_exceeded": True, "finished_at": 3})
+        assert proc.returncode == 1 and "::error::stopped: proxy budget 25 MB exceeded" in proc.stdout, proc.stdout
+        assert summary.read_text().splitlines()[-1] == "**canary**: proxy traffic 25.2 MB of 25 MB"
+        # The budget is the run's own, not a fixed figure: a 10 MB run reads "of 10 MB",
+        # a sidecar with no proxy_budget_bytes falls back to 10 MB, and null (no cap) reads "of no".
+        proc = summarise({"proxy_bytes": 10_200_000, "proxy_budget_bytes": 10 ** 7, "proxy_budget_exceeded": True,
+                          "finished_at": 2})
         assert proc.returncode == 1 and "::error::stopped: proxy budget 10 MB exceeded" in proc.stdout, proc.stdout
         assert summary.read_text().splitlines()[-1] == "**canary**: proxy traffic 10.2 MB of 10 MB"
+        proc = summarise({"proxy_bytes": 2_000_000, "proxy_budget_exceeded": False, "finished_at": 2})
+        assert summary.read_text().splitlines()[-1] == "**canary**: proxy traffic 2.0 MB of 10 MB", "fallback 10"
+        proc = summarise({"proxy_bytes": 2_000_000, "proxy_budget_bytes": None, "proxy_budget_exceeded": False,
+                          "finished_at": 2})
+        assert summary.read_text().splitlines()[-1] == "**canary**: proxy traffic 2.0 MB of no", "no cap"
         proc = summarise({"proxy_bytes": 1, "proxy_budget_exceeded": False, "finished_at": 1},
                          {"proxy_bytes": 10_200_000, "proxy_budget_exceeded": True, "finished_at": 5})
         assert proc.returncode == 1, "the newer of the two sidecars is the run's"
@@ -2198,7 +2211,7 @@ def _():
         proc = summarise({"proxy_bytes": None, "proxy_budget_exceeded": False})
         assert proc.returncode == 0 and "no local proxy" in summary.read_text().splitlines()[-1]
         (Path(tmp) / "canary.json.meta.json").write_text("{not json", encoding="utf-8")
-        proc = subprocess.run([sys.executable, script, "canary.json", "canary", "10"], cwd=tmp, env=env,
+        proc = subprocess.run([sys.executable, script, "canary.json", "canary"], cwd=tmp, env=env,
                               capture_output=True, text=True, timeout=60)
         assert proc.returncode == 0 and "unreadable" in proc.stdout, proc.stdout
 
