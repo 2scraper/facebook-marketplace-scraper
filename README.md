@@ -1,4 +1,4 @@
-# facebook-marketplace-scraper
+# Facebook Marketplace Scraper — Listings, Prices and Locations in Python
 
 ![release](https://img.shields.io/github/v/release/2scraper/facebook-marketplace-scraper?sort=semver)
 ![tests](https://github.com/2scraper/facebook-marketplace-scraper/actions/workflows/tests.yml/badge.svg)
@@ -7,6 +7,8 @@
 ![licence](https://img.shields.io/badge/licence-MIT-green)
 ![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20Puppeteer-informational)
 ![no login](https://img.shields.io/badge/runs%20without-an%20account-success)
+
+**Facebook Marketplace scraper** — an open-source (MIT) Python tool that reads Marketplace search and category pages logged out and writes one row per listing — title, price, location, when it was listed, photo, sold/pending status and delivery options — to JSON or CSV. From one residential IP on 2026-10-05 and 2026-10-06 more than 30 search and listing pages read normally with no page load refused, while a datacentre address (a GitHub runner, measured 2026-10-15) was sent to the login page. Use it for price monitoring of local listings, or compare two runs with the included diff tool to spot price drops and sold listings.
 
 **Scrape Facebook Marketplace listings into clean JSON or CSV, without
 logging in.** Search by keyword or browse a category in any Marketplace
@@ -464,6 +466,23 @@ Parser and flow checks run on fixtures cut from real captures in
 installs the built wheel outside the checkout, builds the Docker image
 and launches Chromium in it, and runs each engine in its own virtualenv.
 `TESTING.md` describes live testing; `CHANGELOG.md` has the history.
+
+## Guides
+
+- [How to run the 2scraper scrapers: setup, proxies, exit codes and access modes](https://2captcha.com/h/how-to-run-2scraper-open-source-scrapers) — installation, `.env`, `.meta.json` for the whole family.
+
+## Related scrapers
+
+Same CLI conventions, same output contract (one row per item, JSON or CSV, a `.meta.json` sidecar and shared exit codes):
+
+- [MakeMyTrip scraper](https://github.com/2scraper/makemytrip-scraper) — Hotel prices with taxes and fees, ratings, stars…
+- [Skyscanner scraper](https://github.com/2scraper/skyscanner-scraper) — Route and dates in — every itinerary with price, airline…
+- [Spinny scraper](https://github.com/2scraper/spinny-scraper) — Used-car listings and car detail pages
+- [Vrbo scraper](https://github.com/2scraper/vrbo-scraper) — Vacation rental prices, ratings and property details…
+- [Webmotors scraper](https://github.com/2scraper/webmotors-scraper) — Car and motorcycle listings from Brazil's webmotors.com.br…
+- [Zimmo scraper](https://github.com/2scraper/zimmo-scraper) — Zimmo.be sale and rent listings
+
+All scrapers: [github.com/2scraper](https://github.com/2scraper) · Need another site? [Open a request](https://github.com/2scraper/.github/issues/new?title=%5BScraper%20request%5D%20)
 
 ## Licence
 
