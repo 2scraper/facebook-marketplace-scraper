@@ -62,6 +62,11 @@ that changes a default is called out at the top of its entry.
   up in Chromium as a navigation timeout (exit 5), not as a 407.
 - CI only: the canary bills the `FACEBOOK_PROXY` exit, so it now runs weekly
   (Mondays 06:41 UTC) instead of daily; a manual dispatch still runs it.
+- README: "no key, no proxy" is now stated as holding from a residential
+  connection. The same search URL sends a datacentre address to the login
+  page (exit 3; measured 2026-10-15 from a GitHub runner and 2026-11-05
+  from a Hetzner server), so the Quick start and feature list say a cloud
+  server or CI runner needs a residential `FACEBOOK_PROXY`.
 
 ### Fixed
 
