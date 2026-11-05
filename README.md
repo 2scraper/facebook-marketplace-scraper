@@ -20,13 +20,16 @@ code.
 
 - **No account, no cookies, no key.** It reads what Marketplace shows any
   logged-out visitor: the listings a search page embeds, then the page's
-  own pagination for the rest.
+  own pagination for the rest. From a home (residential) connection no
+  proxy is needed either; a datacentre address (a cloud server, a CI
+  runner) is sent to the login page on the same search URL, so there you
+  need a residential proxy (see [Volume and blocks](#volume-and-blocks)).
 - **Measured live on 2026-10-06:** 150 listings of one Chicago search in
   35 seconds, paginated past the first 24; 10 listings with `--details`
   in 102 seconds, every one with its description, condition, photos and
   currency; and, before pagination was added, 5 searches in New York,
   London, Berlin, Los Angeles and Chicago — the 24 each embeds — in 25
-  seconds, with no key and no proxy.
+  seconds, with no key and no proxy, from one residential IP.
 - **Nothing about sellers.** Sellers are private people; the tool never
   writes a seller field (see [Sellers](#sellers)).
 - **Honest results.** A blocked, empty or partial run says so in its exit
@@ -55,7 +58,9 @@ python3 playwright_scraper.py --query bike --location nyc
 
 Results land in `facebook_marketplace.json`, with
 `facebook_marketplace.json.meta.json` beside it. No `.env` is needed for
-this.
+this on a home (residential) connection. On a cloud server or CI runner
+the same command exits 3 at Facebook's login page; set `FACEBOOK_PROXY`
+to a residential proxy there.
 
 **When you need more than that:** for many searches, a specific exit
 country, or no browser on your machine, put a 2Captcha residential proxy
@@ -221,9 +226,14 @@ keeping every row already read. To read more: rotate residential exits
 with `--proxy-file`, and keep `--delay-between-pages` at 2 seconds or
 more.
 
-**A datacentre address is refused.** Measured 2026-10-15 from a GitHub
-runner (Azure, westus3) with no proxy: both canary searches were sent to
-the login page (exit 3). The weekly canary therefore needs the
+**A datacentre address is refused.** The route is the same search page
+that reads normally from a residential IP; what differs is the address
+type. Measured 2026-10-15 from a GitHub runner (Azure, westus3) with no
+proxy: both canary searches were sent to the login page (exit 3).
+Measured again 2026-11-05 from a Hetzner server (Helsinki) with no proxy,
+Playwright, `--query bike --location nyc`: login page, exit 3. Listing
+pages (`--details`) were not tried from a datacentre address, since a run
+stops at the refused search first. The weekly canary therefore needs the
 `FACEBOOK_PROXY` repo secret, and is red (not skipped) without it.
 
 The canary's two runs pass `--proxy-budget-mb 25`, above the scraper's own
